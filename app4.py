@@ -1,484 +1,455 @@
-import math
-import numpy as np
 import streamlit as st
+import numpy as np
 import plotly.graph_objects as go
 
 # =========================
-# ページ設定
+# 基本設定
 # =========================
 st.set_page_config(page_title="STARBOW Simulator", layout="wide")
 
-# =========================
-# 見た目（ダーク背景）
-# =========================
-DARK_BG = "#070A16"     # 夜空っぽい濃紺
-PANEL_BG = "#050814"
-TEXT = "white"
-
+# 背景を暗く（CSS）
 st.markdown(
-    f"""
+    """
     <style>
-      .stApp {{
-        background: radial-gradient(1200px 800px at 50% 20%, #0E1433 0%, {DARK_BG} 55%, #000000 100%);
-        color: {TEXT};
-      }}
-      h1, h2, h3, p, label, span, div {{
-        color: {TEXT} !important;
-      }}
-      /* 左パネルっぽく見せる */
-      section[data-testid="stSidebar"] > div {{
-        background: {PANEL_BG};
-      }}
-      /* ボタン文字が見えない事故を避ける */
-      .stButton>button {{
-        color: #FFFFFF !important;
-        background: rgba(255,255,255,0.08) !important;
-        border: 1px solid rgba(255,255,255,0.25) !important;
-      }}
-      .stButton>button:hover {{
-        background: rgba(255,255,255,0.14) !important;
-      }}
+      .stApp { background: radial-gradient(circle at 30% 20%, #101a33 0%, #05070f 55%, #02030a 100%); }
+      h1, h2, h3, p, label, div { color: #ffffff; }
+      /* スライダーの周りの文字を見やすく */
+      .stMarkdown, .stText, .stCaption, .stSlider label { color: #ffffff !important; }
     </style>
     """,
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
 
-# =========================
-# 物理：可視域 & 色
-# =========================
 VISIBLE_MIN = 380.0
 VISIBLE_MAX = 780.0
 
-def wavelength_to_rgb(lam_nm: float) -> str:
-    """
-    簡易の可視光→RGB（Plotly用の'rgb(r,g,b)'文字列）
-    380-780nm 外は呼ばない前提。
-    """
-    lam = lam_nm
-    if lam < 380: lam = 380
-    if lam > 780: lam = 780
-
-    if 380 <= lam < 440:
-        r = -(lam - 440) / (440 - 380)
-        g = 0.0
-        b = 1.0
-    elif 440 <= lam < 490:
-        r = 0.0
-        g = (lam - 440) / (490 - 440)
-        b = 1.0
-    elif 490 <= lam < 510:
-        r = 0.0
-        g = 1.0
-        b = -(lam - 510) / (510 - 490)
-    elif 510 <= lam < 580:
-        r = (lam - 510) / (580 - 510)
-        g = 1.0
-        b = 0.0
-    elif 580 <= lam < 645:
-        r = 1.0
-        g = -(lam - 645) / (645 - 580)
-        b = 0.0
-    else:  # 645-780
-        r = 1.0
-        g = 0.0
-        b = 0.0
-
-    # 端は暗く
-    if 380 <= lam < 420:
-        f = 0.3 + 0.7 * (lam - 380) / (420 - 380)
-    elif 420 <= lam <= 700:
-        f = 1.0
-    else:
-        f = 0.3 + 0.7 * (780 - lam) / (780 - 700)
-
-    r = int(max(0, min(255, 255 * (r * f))))
-    g = int(max(0, min(255, 255 * (g * f))))
-    b = int(max(0, min(255, 255 * (b * f))))
-    return f"rgb({r},{g},{b})"
-
 # =========================
-# 乱数で全球に一様な星配置（方向ベクトル）
+# 便利関数
 # =========================
-def random_unit_vectors(n: int, seed: int) -> np.ndarray:
+def normalize(v: np.ndarray) -> np.ndarray:
+    n = np.linalg.norm(v, axis=1, keepdims=True)
+    n = np.clip(n, 1e-12, None)
+    return v / n
+
+def sample_isotropic_dirs(n: int, seed: int) -> np.ndarray:
     rng = np.random.default_rng(seed)
     v = rng.normal(size=(n, 3))
-    v /= np.linalg.norm(v, axis=1, keepdims=True)
-    return v
+    return normalize(v)
 
-# =========================
-# 相対論的：光行差（方向の変換）& ドップラー（波長）
-# 進行方向 +x を基準（宇宙船が +x に進む）
-# =========================
-def aberrate_and_doppler(dirs: np.ndarray, beta: float, lam0_nm: float) -> tuple[np.ndarray, np.ndarray]:
+def aberrate_dirs(n: np.ndarray, beta: float) -> np.ndarray:
     """
-    dirs: (N,3) 単位ベクトル（宇宙船静止系での星の方向）
-    返り値:
-      dirs_obs: (N,3) 観測者（動いてる宇宙船）から見た方向（単位ベクトル）
-      lam_obs : (N,) 観測される波長[nm]
+    宇宙船が +x 方向に速度 beta で動くときの光行差
+    n: (N,3) 観測前の方向（単位ベクトル）
+    n': 観測後の方向
     """
     if beta <= 0:
-        lam = np.full(dirs.shape[0], lam0_nm, dtype=float)
-        return dirs.copy(), lam
+        return n.copy()
+    gamma = 1.0 / np.sqrt(1.0 - beta * beta)
 
-    gamma = 1.0 / math.sqrt(1.0 - beta * beta)
-    nx = dirs[:, 0]
-    ny = dirs[:, 1]
-    nz = dirs[:, 2]
+    nx, ny, nz = n[:, 0], n[:, 1], n[:, 2]
+    denom = 1.0 + beta * nx
 
-    # 光行差（+x方向へ速度beta）
-    # n'_x = (n_x + beta) / (1 + beta n_x)
-    # n'_{y,z} = n_{y,z} / (gamma (1 + beta n_x))
-    den = (1.0 + beta * nx)
-    npx = (nx + beta) / den
-    npy = ny / (gamma * den)
-    npz = nz / (gamma * den)
+    npx = (nx + beta) / denom
+    npy = ny / (gamma * denom)
+    npz = nz / (gamma * denom)
 
-    nprime = np.stack([npx, npy, npz], axis=1)
-    nprime /= np.linalg.norm(nprime, axis=1, keepdims=True)
+    out = np.stack([npx, npy, npz], axis=1)
+    return normalize(out)
 
-    # ドップラー（波長）: 観測者系での周波数比 D = gamma(1+beta*n_x)
-    # 周波数 f' = D f  -> 波長 λ' = λ / D
-    D = gamma * (1.0 + beta * nx)
-    lam_obs = lam0_nm / D
+def doppler_wavelength(lambda0_nm: float, n: np.ndarray, beta: float) -> np.ndarray:
+    """
+    観測者が +x 方向に beta で移動。
+    周波数: nu' = gamma * nu * (1 + beta * cosθ)  （cosθ = n_x）
+    波長: lambda' = lambda / (gamma*(1+beta*n_x))
+    """
+    if beta <= 0:
+        return np.full((n.shape[0],), lambda0_nm, dtype=float)
+    gamma = 1.0 / np.sqrt(1.0 - beta * beta)
+    factor = gamma * (1.0 + beta * n[:, 0])
+    factor = np.clip(factor, 1e-8, None)
+    return lambda0_nm / factor
 
-    return nprime, lam_obs
+def wavelength_to_rgb_rough(lam_nm: np.ndarray) -> np.ndarray:
+    """
+    ざっくり可視光の波長→RGB（見た目用）
+    """
+    lam = lam_nm.copy()
+
+    r = np.zeros_like(lam, dtype=float)
+    g = np.zeros_like(lam, dtype=float)
+    b = np.zeros_like(lam, dtype=float)
+
+    # 380-440
+    m = (lam >= 380) & (lam < 440)
+    r[m] = -(lam[m] - 440) / (440 - 380)
+    g[m] = 0
+    b[m] = 1
+
+    # 440-490
+    m = (lam >= 440) & (lam < 490)
+    r[m] = 0
+    g[m] = (lam[m] - 440) / (490 - 440)
+    b[m] = 1
+
+    # 490-510
+    m = (lam >= 490) & (lam < 510)
+    r[m] = 0
+    g[m] = 1
+    b[m] = -(lam[m] - 510) / (510 - 490)
+
+    # 510-580
+    m = (lam >= 510) & (lam < 580)
+    r[m] = (lam[m] - 510) / (580 - 510)
+    g[m] = 1
+    b[m] = 0
+
+    # 580-645
+    m = (lam >= 580) & (lam < 645)
+    r[m] = 1
+    g[m] = -(lam[m] - 645) / (645 - 580)
+    b[m] = 0
+
+    # 645-780
+    m = (lam >= 645) & (lam <= 780)
+    r[m] = 1
+    g[m] = 0
+    b[m] = 0
+
+    # ガンマ的な補正（弱め）
+    rgb = np.stack([r, g, b], axis=1)
+    rgb = np.clip(rgb, 0, 1)
+    rgb = rgb ** 0.9
+    return rgb
+
+def rgba_strings(rgb: np.ndarray, alpha: float) -> np.ndarray:
+    a = np.clip(alpha, 0, 1)
+    return np.array([f"rgba({int(255*x)}, {int(255*y)}, {int(255*z)}, {a})" for x, y, z in rgb])
+
+def dirs_to_screen_xy(n: np.ndarray, yaw_deg: float, pitch_deg: float) -> np.ndarray:
+    """
+    “宇宙船中心視点”の2D表示用：方向ベクトルを回転してから
+    ステレオ投影（簡易）でスクリーン座標へ
+    """
+    yaw = np.deg2rad(yaw_deg)
+    pitch = np.deg2rad(pitch_deg)
+
+    # yaw: z軸回り、pitch: y軸回り（わかりやすさ優先）
+    cz, sz = np.cos(yaw), np.sin(yaw)
+    cy, sy = np.cos(pitch), np.sin(pitch)
+
+    Rz = np.array([[cz, -sz, 0],
+                   [sz,  cz, 0],
+                   [0,    0, 1]], dtype=float)
+    Ry = np.array([[ cy, 0, sy],
+                   [  0, 1,  0],
+                   [-sy, 0, cy]], dtype=float)
+
+    v = (Ry @ (Rz @ n.T)).T  # (N,3)
+
+    # 前方（+x）をスクリーン中心に置く
+    # ステレオ投影： (y,z)/(1+x)
+    denom = (1.0 + v[:, 0])
+    denom = np.clip(denom, 1e-6, None)
+    x2 = v[:, 1] / denom
+    y2 = v[:, 2] / denom
+    return np.stack([x2, y2], axis=1)
 
 # =========================
-# “宇宙船視点”の3Dカメラ（俯瞰に戻さない最終手段）
-# Plotlyは「eye から原点を見る」カメラなので、原点近くにeyeを置く。
+# セッション状態（視点がリセットされないため）
 # =========================
-def ship_camera() -> dict:
-    return {
-        "eye": {"x": 0.001, "y": 0.001, "z": 0.001},
-        "up":  {"x": 0.0, "y": 0.0, "z": 1.0},
-        "center": {"x": 0.0, "y": 0.0, "z": 0.0},
-    }
-
-# =========================
-# セッション初期化（起動時：3DモードOFF）
-# =========================
-if "drag3d" not in st.session_state:
-    st.session_state.drag3d = False  # ←起動時OFF
+if "yaw" not in st.session_state:
+    st.session_state.yaw = 0.0
+if "pitch" not in st.session_state:
+    st.session_state.pitch = 0.0
 if "zoom" not in st.session_state:
     st.session_state.zoom = 2.2
-if "glow" not in st.session_state:
-    st.session_state.glow = 0.25
-if "star_size" not in st.session_state:
-    st.session_state.star_size = 3
+if "mode3d" not in st.session_state:
+    st.session_state.mode3d = False  # ★起動時はOFF
 if "seed" not in st.session_state:
     st.session_state.seed = 12345
-if "beta" not in st.session_state:
-    st.session_state.beta = 0.50
 if "n_stars" not in st.session_state:
     st.session_state.n_stars = 2500
-if "show_invisible" not in st.session_state:
-    st.session_state.show_invisible = False
 
 # =========================
-# UI
+# UI（左：パラメータ）
 # =========================
-st.markdown("# **STARBOW Simulator（宇宙船中心視点）**")
+colL, colR = st.columns([1, 2], gap="large")
 
-left, right = st.columns([0.33, 0.67], gap="large")
-
-with left:
+with colL:
     st.markdown("## パラメータ")
 
-    beta = st.slider("v/c", 0.00, 0.99, float(st.session_state.beta), 0.01)
-    st.session_state.beta = beta
+    beta = st.slider("v/c", 0.0, 0.99, 0.50, 0.01)
 
-    n_stars = st.slider("星の数", 50, 15000, int(st.session_state.n_stars), 50)
+    n_stars = st.slider("星の数", 100, 20000, int(st.session_state.n_stars), 100)
     st.session_state.n_stars = n_stars
 
     seed = st.number_input("配置シード（同じ値で同じ星配置）", value=int(st.session_state.seed), step=1)
     st.session_state.seed = int(seed)
 
-    st.session_state.drag3d = st.toggle("ドラッグで見回し（3Dモード）", value=bool(st.session_state.drag3d))
     st.markdown("---")
+    st.session_state.mode3d = st.toggle("ドラッグで見回し（3Dモード）", value=st.session_state.mode3d)
 
+    st.markdown("---")
     st.markdown("## 表示")
-    st.session_state.zoom = st.slider("ズーム（大きいほど拡大）", 1.0, 6.0, float(st.session_state.zoom), 0.05)
-    st.session_state.star_size = st.slider("星の大きさ", 1, 10, int(st.session_state.star_size), 1)
-    st.session_state.glow = st.slider("グロー強さ", 0.0, 1.5, float(st.session_state.glow), 0.05)
 
-    st.session_state.show_invisible = st.toggle("不可視光を表示（白枠）", value=bool(st.session_state.show_invisible))
+    zoom = st.slider("ズーム（大きいほど拡大）", 0.6, 6.0, float(st.session_state.zoom), 0.05)
+    st.session_state.zoom = float(zoom)
+
+    star_size = st.slider("星の大きさ", 1.0, 10.0, 3.0, 0.5)
+    glow_strength = st.slider("グロー強さ", 0.0, 1.0, 0.25, 0.01)
+
+    show_invisible_white = st.checkbox("不可視光を表示（白枠）", value=False)
 
     st.markdown("---")
 
-    # ✅ 文字が常に見える「初期化」ボタン
-    if st.button("初期化（パラメータと視点をリセット）", use_container_width=True):
-        st.session_state.beta = 0.50
-        st.session_state.n_stars = 2500
-        st.session_state.seed = 12345
+    # ★「文字が見えない白ボタン」問題を避けるため、普通のst.buttonで明示表示
+    if st.button("初期配置に戻す（視点・ズーム）", use_container_width=True):
+        st.session_state.yaw = 0.0
+        st.session_state.pitch = 0.0
         st.session_state.zoom = 2.2
-        st.session_state.star_size = 3
-        st.session_state.glow = 0.25
-        st.session_state.show_invisible = False
-        st.session_state.drag3d = False  # 起動時と同じでOFFに戻す
+        st.session_state.mode3d = False
         st.rerun()
 
 # =========================
-# データ生成
+# 星生成（等方分布→光行差→ドップラー）
 # =========================
-dirs = random_unit_vectors(st.session_state.n_stars, st.session_state.seed)
+base_lambda = 580.0  # 基準波長（黄色寄り）
+dirs0 = sample_isotropic_dirs(n_stars, seed=st.session_state.seed)
+dirs = aberrate_dirs(dirs0, beta=beta)
+lam = doppler_wavelength(base_lambda, dirs0, beta=beta)  # ここは“元の入射方向”でOK（θ基準）
 
-# ベース波長：黄色（統一）
-LAMBDA0 = 550.0
+visible = (lam >= VISIBLE_MIN) & (lam <= VISIBLE_MAX)
 
-dirs_obs, lam_obs = aberrate_and_doppler(dirs, st.session_state.beta, LAMBDA0)
-
-# 可視/不可視
-visible = (lam_obs >= VISIBLE_MIN) & (lam_obs <= VISIBLE_MAX)
-
-# 色（STARBOWっぽく：観測波長で色が変わる）
-colors = np.array([wavelength_to_rgb(l) if (VISIBLE_MIN <= l <= VISIBLE_MAX) else "rgba(0,0,0,0)" for l in lam_obs])
-
-# 不可視は「白枠のみ」表示（トグルON時）
-outline_color = np.where(visible, "rgba(0,0,0,0)", "rgba(255,255,255,0.9)")
-outline_width = np.where(visible, 0, 2)
-
-if not st.session_state.show_invisible:
-    # 不可視は完全に消す
-    keep = visible
-else:
-    keep = np.ones_like(visible, dtype=bool)
-
-dirs_plot = dirs_obs[keep]
-colors_plot = colors[keep]
-outline_color_plot = outline_color[keep]
-outline_width_plot = outline_width[keep]
-lam_plot = lam_obs[keep]
-vis_plot = visible[keep]
-
-# サイズ & グロー（Plotlyは本物のグローが弱いので、同一点に薄い大きい点を重ねて擬似）
-base_size = st.session_state.star_size
-glow_strength = st.session_state.glow
+rgb = wavelength_to_rgb_rough(lam)
+# 可視は色、不可視は背景色（見えない）
+bg_rgb = np.array([0.03, 0.04, 0.10], dtype=float)  # 背景に馴染む暗色
+rgb_visible = rgb.copy()
+rgb_visible[~visible] = bg_rgb
 
 # =========================
-# 3Dモード：Plotly 3D（ドラッグ見回し）
-# 重要：俯瞰に戻らないよう “毎回 ship_camera() を強制”
+# 目印（前後上下左右）
 # =========================
-with right:
-    title_suffix = "（ドラッグで見回し）" if st.session_state.drag3d else ""
-    st.markdown(f"## v/c = {st.session_state.beta:.2f} {title_suffix}")
+# 進行方向 +x を「前」
+markers_dirs = np.array([
+    [ 1, 0, 0],  # +x 前
+    [-1, 0, 0],  # -x 後
+    [ 0, 1, 0],  # +y 右（定義）
+    [ 0,-1, 0],  # -y 左
+    [ 0, 0, 1],  # +z 上
+    [ 0, 0,-1],  # -z 下
+], dtype=float)
+markers_text = ["+x(前)", "-x(後)", "+y(右)", "-y(左)", "+z(上)", "-z(下)"]
 
-    if st.session_state.drag3d:
-        # 3D scatter：星は半径1の球面上
-        x, y, z = dirs_plot[:, 0], dirs_plot[:, 1], dirs_plot[:, 2]
+# =========================
+# 描画
+# =========================
+with colR:
+    title_suffix = "（ドラッグで見回し）" if st.session_state.mode3d else "（スライダーで向き）"
+    st.markdown(f"# STARBOW Simulator（宇宙船中心視点）")
+    st.markdown(f"## v/c = {beta:.2f} {title_suffix}")
 
-        # グロー用（薄く大きい点）
+    if st.session_state.mode3d:
+        # -------------------------
+        # 3Dモード（Plotly scene）
+        # -------------------------
+        x, y, z = dirs[:, 0], dirs[:, 1], dirs[:, 2]
+
+        # グロー（大きい点＋薄い）
+        glow_colors = rgba_strings(rgb_visible, alpha=0.12 + 0.35 * glow_strength)
+        core_colors = rgba_strings(rgb_visible, alpha=0.45 + 0.45 * (1.0 - 0.3 * glow_strength))
+
         fig = go.Figure()
 
-        if glow_strength > 0:
-            fig.add_trace(
-                go.Scatter3d(
-                    x=x, y=y, z=z,
-                    mode="markers",
-                    marker=dict(
-                        size=max(2, base_size * (3.0 + 6.0 * glow_strength)),
-                        color=colors_plot,
-                        opacity=min(0.35, 0.10 + 0.25 * glow_strength),
-                        line=dict(color=outline_color_plot, width=outline_width_plot),
-                    ),
-                    hoverinfo="skip",
-                    name="glow",
-                )
-            )
-
-        # 本体
+        # グロー層
         fig.add_trace(
             go.Scatter3d(
                 x=x, y=y, z=z,
                 mode="markers",
+                name="glow",
                 marker=dict(
-                    size=base_size * 2.0,
-                    color=colors_plot,
-                    opacity=0.95,
-                    line=dict(color=outline_color_plot, width=outline_width_plot),
-                ),
-                hoverinfo="skip",
-                name="stars",
-            )
-        )
-
-        # 6方向目印（±x, ±y, ±z） ※ “宇宙船の周り”の目安
-        marks = {
-            "+x(前)": (1.0, 0.0, 0.0),
-            "-x(後)": (-1.0, 0.0, 0.0),
-            "+y(右)": (0.0, 1.0, 0.0),
-            "-y(左)": (0.0, -1.0, 0.0),
-            "+z(上)": (0.0, 0.0, 1.0),
-            "-z(下)": (0.0, 0.0, -1.0),
-        }
-        mx = [v[0] for v in marks.values()]
-        my = [v[1] for v in marks.values()]
-        mz = [v[2] for v in marks.values()]
-        mt = list(marks.keys())
-
-        fig.add_trace(
-            go.Scatter3d(
-                x=mx, y=my, z=mz,
-                mode="markers+text",
-                marker=dict(size=10, color="white", opacity=0.95),
-                text=mt,
-                textposition="top center",
-                hoverinfo="skip",
-                name="marks",
-            )
-        )
-
-        # “宇宙船（原点）”マーク
-        fig.add_trace(
-            go.Scatter3d(
-                x=[0.0], y=[0.0], z=[0.0],
-                mode="markers+text",
-                marker=dict(size=6, color="white", opacity=0.9),
-                text=["ship"],
-                textposition="bottom center",
-                hoverinfo="skip",
-                name="ship",
-            )
-        )
-
-        # レイアウト（ダーク）
-        fig.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=0, r=0, t=10, b=0),
-            showlegend=False,
-            scene=dict(
-                xaxis=dict(visible=False),
-                yaxis=dict(visible=False),
-                zaxis=dict(visible=False),
-                bgcolor="rgba(0,0,0,0)",
-                aspectmode="data",
-                camera=ship_camera(),  # ✅最重要：俯瞰に戻さない
-            ),
-        )
-
-        # ズーム：Plotlyは“zoom値”を直接は持たないので、camera.eye を拡大縮小で近似
-        # zoom↑ => 近づく（eye小さく）
-        zf = float(st.session_state.zoom)
-        eye_scale = max(0.0004, 0.0025 / zf)
-        cam = ship_camera()
-        cam["eye"] = {"x": eye_scale, "y": eye_scale, "z": eye_scale}
-        fig.update_layout(scene_camera=cam)
-
-        st.plotly_chart(
-            fig,
-            use_container_width=True,
-            config=dict(
-                scrollZoom=True,      # 2本指ズーム（トラックパッド/マウスホイール）
-                displayModeBar=False,
-            ),
-        )
-
-        st.caption("※ 3Dモードはドラッグで見回しできます。パラメータ変更時も“俯瞰”には戻さず、宇宙船視点に戻します。")
-
-    # =========================
-    # 2Dモード：リング（これまでの“見やすいやつ”）
-    # =========================
-    else:
-        # 観測方向を2Dへ：進行方向(+x)を中心、角度θ = arccos(n_x)
-        nx = dirs_plot[:, 0]
-        ny = dirs_plot[:, 1]
-        nz = dirs_plot[:, 2]
-
-        theta = np.arccos(np.clip(nx, -1.0, 1.0))  # 0..pi
-        # 半球の投影（前方90°までを円内に）
-        # r = theta / (pi/2) で 0..1（θ<=90°のみ）
-        front = theta <= (math.pi / 2)
-        r = (theta[front] / (math.pi / 2))
-        phi = np.arctan2(nz[front], ny[front])  # y-z 平面で角度
-
-        # 画面座標（中心=前方）
-        X = r * np.cos(phi)
-        Y = r * np.sin(phi)
-
-        # 色・枠
-        c2 = colors_plot[front]
-        oc2 = outline_color_plot[front]
-        ow2 = outline_width_plot[front]
-
-        fig2 = go.Figure()
-
-        # グロー
-        if glow_strength > 0:
-            fig2.add_trace(
-                go.Scatter(
-                    x=X, y=Y,
-                    mode="markers",
-                    marker=dict(
-                        size=max(4, base_size * (8.0 + 10.0 * glow_strength)),
-                        color=c2,
-                        opacity=min(0.35, 0.10 + 0.25 * glow_strength),
-                        line=dict(color=oc2, width=ow2),
-                    ),
-                    hoverinfo="skip",
-                    showlegend=False,
-                )
-            )
-
-        # 本体
-        fig2.add_trace(
-            go.Scatter(
-                x=X, y=Y,
-                mode="markers",
-                marker=dict(
-                    size=base_size * 3.0,
-                    color=c2,
-                    opacity=0.95,
-                    line=dict(color=oc2, width=ow2),
+                    size=star_size * (2.8 + 3.0 * glow_strength),
+                    color=glow_colors,
                 ),
                 hoverinfo="skip",
                 showlegend=False,
             )
         )
 
-        # リング（30°, 60°, 90°）
-        rings_deg = [30, 60, 90]
-        for deg in rings_deg:
-            rr = deg / 90.0
-            t = np.linspace(0, 2*np.pi, 360)
-            fig2.add_trace(
-                go.Scatter(
-                    x=rr*np.cos(t), y=rr*np.sin(t),
-                    mode="lines",
-                    line=dict(color="rgba(255,255,255,0.35)", width=2 if deg==90 else 1),
-                    hoverinfo="skip",
-                    showlegend=False,
-                )
+        # コア層
+        fig.add_trace(
+            go.Scatter3d(
+                x=x, y=y, z=z,
+                mode="markers",
+                name="stars",
+                marker=dict(
+                    size=star_size,
+                    color=core_colors,
+                ),
+                hoverinfo="skip",
+                showlegend=False,
             )
-            fig2.add_trace(
-                go.Scatter(
-                    x=[rr], y=[0],
-                    mode="text",
-                    text=[f"{deg}°"],
-                    textposition="middle right",
-                    textfont=dict(color="white", size=22),
-                    hoverinfo="skip",
-                    showlegend=False,
+        )
+
+        # 不可視光の白枠（単一トグル）
+        if show_invisible_white:
+            inv = ~visible
+            if np.any(inv):
+                fig.add_trace(
+                    go.Scatter3d(
+                        x=x[inv], y=y[inv], z=z[inv],
+                        mode="markers",
+                        name="invisible",
+                        marker=dict(
+                            size=star_size * 1.05,
+                            color="rgba(0,0,0,0)",  # 中身透明
+                            line=dict(color="rgba(255,255,255,0.75)", width=2),  # ★widthは必ず数値1個
+                        ),
+                        hoverinfo="skip",
+                        showlegend=False,
+                    )
                 )
+
+        # 目印（白点＋文字）
+        md = markers_dirs
+        fig.add_trace(
+            go.Scatter3d(
+                x=md[:, 0], y=md[:, 1], z=md[:, 2],
+                mode="markers+text",
+                text=markers_text,
+                textposition="top center",
+                marker=dict(size=10, color="rgba(255,255,255,0.95)"),
+                textfont=dict(color="rgba(255,255,255,0.9)", size=14),
+                hoverinfo="skip",
+                showlegend=False,
             )
+        )
 
-        # 十字
-        fig2.add_trace(go.Scatter(x=[-1.05, 1.05], y=[0, 0], mode="lines",
-                                  line=dict(color="rgba(120,180,255,0.8)", width=3),
-                                  hoverinfo="skip", showlegend=False))
-        fig2.add_trace(go.Scatter(x=[0, 0], y=[-1.05, 1.05], mode="lines",
-                                  line=dict(color="rgba(120,180,255,0.8)", width=3),
-                                  hoverinfo="skip", showlegend=False))
+        # ★「俯瞰に戻る」対策：uirevision固定
+        # ★「宇宙船視点に近い」初期：eyeを原点近くに
+        #  zoomスライダーで eye距離だけ調整
+        eye_dist = 0.20 / max(0.1, st.session_state.zoom)  # zoom大→近く
+        camera = dict(
+            eye=dict(x=eye_dist, y=0.0, z=0.0),
+            center=dict(x=0.0, y=0.0, z=0.0),
+            up=dict(x=0.0, y=0.0, z=1.0),
+        )
 
-        fig2.update_layout(
+        fig.update_layout(
+            uirevision="KEEP_VIEW",  # これが肝
+            margin=dict(l=0, r=0, t=0, b=0),
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=0, r=0, t=10, b=0),
-            xaxis=dict(visible=False, range=[-1.15, 1.15]),
-            yaxis=dict(visible=False, range=[-1.15, 1.15], scaleanchor="x", scaleratio=1),
+            scene=dict(
+                xaxis=dict(visible=False),
+                yaxis=dict(visible=False),
+                zaxis=dict(visible=False),
+                aspectmode="cube",
+                camera=camera,
+                bgcolor="rgba(0,0,0,0)",
+            ),
         )
-        st.plotly_chart(
-            fig2,
-            use_container_width=True,
-            config=dict(displayModeBar=False),
+
+        # ★スマホ操作：1本指ドラッグ=回転 になってほしいので orbit を明示
+        config = dict(
+            displaylogo=False,
+            scrollZoom=True,   # 2本指ピンチ/ホイールズームを効かせやすい
         )
-        st.caption("※ 2Dモードは前方（進行方向）90°の範囲を表示。3DはOFFのときに見やすいリング表示になります。")
+        fig.update_layout(scene_dragmode="orbit")
+
+        st.plotly_chart(fig, use_container_width=True, config=config)
+
+        st.caption("※ 3Dモードはドラッグで見回しできます。パラメータを変えても視点を維持するよう調整済み。")
+
+    else:
+        # -------------------------
+        # 2Dモード（スライダーで向き）
+        # -------------------------
+        # “見ている方向”はスライダーで（3D OFF のときだけ）
+        st.session_state.yaw = st.slider("ヨー（左右）", -180.0, 180.0, float(st.session_state.yaw), 1.0)
+        st.session_state.pitch = st.slider("ピッチ（上下）", -89.0, 89.0, float(st.session_state.pitch), 1.0)
+
+        xy = dirs_to_screen_xy(dirs, st.session_state.yaw, st.session_state.pitch)
+
+        # ズーム：xyを拡大表示
+        xy = xy * st.session_state.zoom
+
+        # 可視の点
+        vis_xy = xy[visible]
+        vis_rgb = rgb[visible]
+        vis_col = rgba_strings(vis_rgb, alpha=0.55 + 0.35 * (1.0 - 0.3 * glow_strength))
+        glow_col = rgba_strings(vis_rgb, alpha=0.10 + 0.35 * glow_strength)
+
+        fig2 = go.Figure()
+
+        # グロー
+        fig2.add_trace(
+            go.Scatter(
+                x=vis_xy[:, 0],
+                y=vis_xy[:, 1],
+                mode="markers",
+                marker=dict(
+                    size=star_size * (5.0 + 6.0 * glow_strength),
+                    color=glow_col,
+                ),
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+
+        # コア
+        fig2.add_trace(
+            go.Scatter(
+                x=vis_xy[:, 0],
+                y=vis_xy[:, 1],
+                mode="markers",
+                marker=dict(size=star_size, color=vis_col),
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+
+        # 不可視光の白枠（単一トグル）
+        if show_invisible_white:
+            inv_xy = xy[~visible]
+            if inv_xy.shape[0] > 0:
+                fig2.add_trace(
+                    go.Scatter(
+                        x=inv_xy[:, 0],
+                        y=inv_xy[:, 1],
+                        mode="markers",
+                        marker=dict(
+                            size=star_size * 1.2,
+                            color="rgba(0,0,0,0)",
+                            line=dict(color="rgba(255,255,255,0.75)", width=2),
+                        ),
+                        hoverinfo="skip",
+                        showlegend=False,
+                    )
+                )
+
+        # 目印（2D表示でも置く）
+        mk_xy = dirs_to_screen_xy(markers_dirs, st.session_state.yaw, st.session_state.pitch) * st.session_state.zoom
+        fig2.add_trace(
+            go.Scatter(
+                x=mk_xy[:, 0],
+                y=mk_xy[:, 1],
+                mode="markers+text",
+                text=markers_text,
+                textposition="top center",
+                marker=dict(size=10, color="rgba(255,255,255,0.95)"),
+                textfont=dict(color="rgba(255,255,255,0.9)", size=14),
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+
+        fig2.update_layout(
+            margin=dict(l=0, r=0, t=0, b=0),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False, scaleanchor="x", scaleratio=1),
+        )
+        st.plotly_chart(fig2, use_container_width=True, config=dict(displaylogo=False))
+
+        st.caption("※ 2Dモードはスライダーで視点（ヨー/ピッチ）を調整できます。3Dモードにするとドラッグで見回し。")
