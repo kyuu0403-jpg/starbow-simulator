@@ -365,7 +365,7 @@ def build_2d_fig() -> go.Figure:
         margin=dict(l=10, r=10, t=10, b=10),
         xaxis=dict(
             visible=False,
-            range=[-90, 90],
+            range=[-lim, lim],
             autorange=False,
             fixedrange=True,
             scaleanchor="y",
@@ -373,7 +373,7 @@ def build_2d_fig() -> go.Figure:
         ),
         yaxis=dict(
             visible=False,
-            range=[-90, 90],
+            range=[-lim, lim],
             autorange=False,
             fixedrange=True,
         ),
@@ -522,4 +522,5 @@ else:
     )
 
 st.caption("※不可視光は「不可視光を表示（白枠）」OFF のとき完全に描画しません。ONで白枠として表示します。")
+
 
