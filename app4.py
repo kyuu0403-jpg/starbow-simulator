@@ -243,7 +243,7 @@ def build_2d_fig() -> go.Figure:
         inv_mask = np.zeros_like(vis_mask, dtype=bool)
 
     # ★ここが今回の修正：90°リングが絶対に見切れないようにする
-    lim = max(90.0, 90.0 / zoom)
+    lim = 90.0 / zoom
 
     fig = go.Figure()
 
@@ -511,3 +511,4 @@ else:
     )
 
 st.caption("※不可視光は「不可視光を表示（白枠）」OFF のとき完全に描画しません。ONで白枠として表示します。")
+
