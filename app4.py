@@ -250,17 +250,19 @@ def build_3d_fig() -> go.Figure:
     )
 
     # ship at origin
-    fig.add_trace(
-        go.Scatter3d(
-            x=[0], y=[0], z=[0],
-            mode="markers+text",
-            marker=dict(size=6, color="white"),
-            text=["ship"],
-            textposition="bottom center",
-            textfont=dict(color="white", size=12),
-            hoverinfo="skip",
-            name="ship",
-        )
+  fig.add_trace(
+    go.Scatter3d(
+        x=[0], y=[0], z=[0],
+        mode="markers+text",
+        marker=dict(size=6, color="white"),
+        text=["ship"],
+        textposition="bottom center",
+        textfont=dict(color="white", size=12),
+        hoverinfo="skip",
+        name="ship",
+    )
+)
+
         # 小さな「進行方向(+x)」コーン（ロケットっぽさ）
 fig.add_trace(
     go.Cone(
@@ -318,6 +320,7 @@ st.plotly_chart(
 )
 
 st.caption("※不可視光は「不可視光を表示（白枠）」OFF のとき完全に表示しません。ONで白枠として表示します。")
+
 
 
 
