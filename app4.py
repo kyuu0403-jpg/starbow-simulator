@@ -261,13 +261,28 @@ def build_3d_fig() -> go.Figure:
             hoverinfo="skip",
             name="ship",
         )
+        # 小さな「進行方向(+x)」コーン（ロケットっぽさ）
+fig.add_trace(
+    go.Cone(
+        x=[0.0], y=[0.0], z=[0.0],
+        u=[0.22], v=[0.0], w=[0.0],   # +x 方向
+        anchor="tail",
+        showscale=False,
+        colorscale=[[0, "white"], [1, "white"]],
+        sizemode="absolute",
+        sizeref=0.25,
+        name="ship_cone",
+        hoverinfo="skip",
+    )
+)
+
     )
 
     # 初期向き：+x が画面中心に来るように固定（位置は維持したいので距離感は同程度に）
     # eye は「原点からカメラの位置」。center=(0,0,0)を見る。
     # +x を正面にしたい → カメラを -x 側に置いて原点を見る。
     camera = dict(
-        eye=dict(x=-0.25, y=0.25, z=0.25),
+        eye=dict(x=-1.6, y=0.0, z=0.0),
         center=dict(x=0.0, y=0.0, z=0.0),
         up=dict(x=0.0, y=0.0, z=1.0),
     )
@@ -302,4 +317,5 @@ st.plotly_chart(
     config=dict(scrollZoom=True, displaylogo=False),
 )
 
-st.caption("※不可視光は「不可視光を表示（白枠）」OFF のとき完全に描画しません。ONで白枠として表示します。")
+st.caption("※不可視光は「不可視光を表示（白枠）」OFF のとき完全に表示しません。ONで白枠として表示します。")
+
