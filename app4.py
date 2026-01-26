@@ -1,4 +1,4 @@
-  import numpy as np
+import numpy as np
 import streamlit as st
 import plotly.graph_objects as go
 
@@ -266,3 +266,4 @@ fig.update_layout(
 
 with colR:
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
