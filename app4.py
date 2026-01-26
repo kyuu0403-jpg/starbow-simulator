@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 st.set_page_config(page_title="STARBOW Simulator", layout="wide")
 
 # -----------------------------
-# Theme + Button Fix (文字が常時見えるように)
+# Theme + Button Fix
 # -----------------------------
 st.markdown(
     """
@@ -14,7 +14,6 @@ st.markdown(
       h1,h2,h3,h4,h5,h6,p,span,div,label { color: #ffffff !important; }
       section[data-testid="stSidebar"] { background: #070a16; }
 
-      /* ボタンの文字が「ホバーしないと見えない」問題を潰す */
       div.stButton > button {
         background: rgba(35, 45, 85, 0.65) !important;
         color: #ffffff !important;
@@ -156,13 +155,13 @@ DEFAULTS = dict(
     base_size=7,
     glow=0.65,
     show_invisible=False,
-    interactive3d=True,  # 3DをデフォでONにしてもいい感じ
+    interactive3d=True,
 )
 
 for k, v in DEFAULTS.items():
     st.session_state.setdefault(k, v)
 
-# 3Dカメラを「初回だけ」指定するためのフラグ
+# 初回だけカメラをセットするフラグ
 st.session_state.setdefault("camera_initialized", False)
 
 def do_reset():
@@ -225,7 +224,6 @@ s_prime, lam_obs = aberrate_and_doppler_sources(s_xyz, beta, lam0)
 # -----------------------------
 with colR:
     if st.session_state.interactive3d:
-        # 3D: drag to orbit (look-around)
         rgb = wavelength_to_rgb_nm(lam_obs)
         rgb_str = [f"rgb({int(255*r)},{int(255*g)},{int(255*b)})" for r, g, b in rgb]
 
@@ -278,12 +276,12 @@ with colR:
                 )
             )
 
-        # Ship marker at origin (初期位置の目印)
+        # Ship marker (origin)
         fig.add_trace(
             go.Scatter3d(
                 x=[0.0], y=[0.0], z=[0.0],
                 mode="markers",
-                marker=dict(size=6, color="rgba(255,255,255,0.9)"),
+                marker=dict(size=6, color="rgba(255,255,255,0.95)"),
                 hoverinfo="skip",
                 showlegend=False
             )
@@ -302,12 +300,11 @@ with colR:
         my = [d[1] for d in dirs.values()]
         mz = [d[2] for d in dirs.values()]
         mt = list(dirs.keys())
-
         fig.add_trace(
             go.Scatter3d(
                 x=mx, y=my, z=mz,
                 mode="markers+text",
-                marker=dict(size=5, color="rgba(255,255,255,0.85)"),
+                marker=dict(size=5, color="rgba(255,255,255,0.90)"),
                 text=mt,
                 textposition="top center",
                 textfont=dict(color="white", size=14),
@@ -316,31 +313,33 @@ with colR:
             )
         )
 
-        # Layout (ここが重要：cameraは「初回だけ」設定して以後触らない)
+        # Layout
+        scene_dict = dict(
+            bgcolor="#070a16",
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+            zaxis=dict(visible=False),
+            aspectmode="cube",
+            # ★ scene側にも固定のuRevision（カメラ保持を強化）
+            uirevision="KEEP_3D_SCENE",
+        )
+
         layout_kwargs = dict(
             margin=dict(l=0, r=0, t=60, b=0),
             paper_bgcolor="#070a16",
-            scene=dict(
-                bgcolor="#070a16",
-                xaxis=dict(visible=False),
-                yaxis=dict(visible=False),
-                zaxis=dict(visible=False),
-                aspectmode="cube",
-            ),
+            scene=scene_dict,
             title=dict(
                 text=f"v/c = {beta:.2f}（ドラッグで見回し）",
                 x=0.5, y=0.98,
                 xanchor="center", yanchor="top",
                 font=dict(color="white", size=32),
             ),
-            # これで「パラメータ変更してもカメラを維持」しやすくなる
+            # ★ 全体uRevisionも固定
             uirevision="KEEP_3D",
         )
 
-        # 初回だけ：宇宙船（原点）近くに寄った初期カメラ
+        # 初回だけ：原点寄りの初期カメラ
         if not st.session_state["camera_initialized"]:
-            # +x（進行方向）を“正面”っぽくしたいので、-x側から原点を見る
-            # eyeを小さめにして「俯瞰すぎる」を抑える
             layout_kwargs["scene"]["camera"] = dict(
                 center=dict(x=0, y=0, z=0),
                 eye=dict(x=-1.6, y=0.0, z=0.25),
@@ -355,12 +354,14 @@ with colR:
             "displayModeBar": False,
             "scrollZoom": True,
         }
-        st.plotly_chart(fig, use_container_width=True, config=config)
 
-        st.caption("※ 3Dモードはドラッグで見回しできます。パラメータを変えても視点を維持するよう調整済み。")
+        # ★ これが肝：key固定で「同じグラフ」として扱わせ、視点を維持させる
+        st.plotly_chart(fig, use_container_width=True, config=config, key="STARBOw_3D")
+
+        st.caption("※ 3Dモードはドラッグで見回しできます。パラメータを変えても視点が維持されるよう強化済み。")
 
     else:
-        # 2D: ring/projection view (slider-driven look direction)
+        # 2D: ring view
         yaw = float(st.session_state.yaw)
         pitch = float(st.session_state.pitch)
 
@@ -394,19 +395,19 @@ with colR:
                 )
             )
 
-        # Cross
         fig.add_shape(type="line", x0=-1.02, y0=0, x1=1.02, y1=0,
                       line=dict(color="rgba(120,170,255,0.35)", width=2))
         fig.add_shape(type="line", x0=0, y0=-1.02, x1=0, y1=1.02,
                       line=dict(color="rgba(120,170,255,0.35)", width=2))
 
+        z = float(st.session_state.zoom)
         fig.update_layout(
             margin=dict(l=10, r=10, t=40, b=10),
             paper_bgcolor="#070a16",
             plot_bgcolor="#070a16",
-            xaxis=dict(visible=False, range=[-1/float(st.session_state.zoom), 1/float(st.session_state.zoom)]),
-            yaxis=dict(visible=False, range=[-1/float(st.session_state.zoom), 1/float(st.session_state.zoom)], scaleanchor="x", scaleratio=1),
-            dragmode=False,  # 2Dは誤操作防止でドラッグ無効
+            xaxis=dict(visible=False, range=[-1/z, 1/z]),
+            yaxis=dict(visible=False, range=[-1/z, 1/z], scaleanchor="x", scaleratio=1),
+            dragmode=False,
             uirevision="KEEP_2D",
             title=dict(
                 text=f"v/c = {beta:.2f}",
@@ -417,5 +418,8 @@ with colR:
         )
 
         config = {"displayModeBar": False, "scrollZoom": True}
-        st.plotly_chart(fig, use_container_width=True, config=config)
-        st.caption("※ 2Dモードはリングが最優先。視点はヨー/ピッチで変更（ドラッグ回転は仕様上不可のため無効化）。")
+
+        # ★ 2D側もkey固定（モード切替の安定化）
+        st.plotly_chart(fig, use_container_width=True, config=config, key="STARBOw_2D")
+
+        st.caption("※ 2Dモードはリング優先。視点はヨー/ピッチで変更。")
