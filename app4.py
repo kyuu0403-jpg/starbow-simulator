@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 # =========================
 # 基本設定
 # =========================
-st.set_page_config(page_title="STARBOW Simulator", layout="wide")
+st.set_page_config(page_title="STARBOW Simulator (3D Only)", layout="wide")
 
 BG = "#060a14"
 PANEL_BG = "#060a14"
@@ -70,47 +70,9 @@ def aberrate_directions(n: np.ndarray, beta: float) -> np.ndarray:
 def doppler_factor(n_prime: np.ndarray, beta: float) -> np.ndarray:
     if beta <= 0:
         return np.ones(len(n_prime))
-
     gamma = 1.0 / np.sqrt(1.0 - beta**2)
     cos_th = n_prime[:, 0]
-    D = gamma * (1.0 + beta * cos_th)
-    return D
-
-def rot_yaw_pitch(v: np.ndarray, yaw_deg: float, pitch_deg: float) -> np.ndarray:
-    yaw = np.deg2rad(yaw_deg)
-    pitch = np.deg2rad(pitch_deg)
-
-    cy, sy = np.cos(yaw), np.sin(yaw)
-    cp, sp = np.cos(pitch), np.sin(pitch)
-
-    Rz = np.array([
-        [cy, -sy, 0.0],
-        [sy,  cy, 0.0],
-        [0.0, 0.0, 1.0]
-    ])
-
-    Ry = np.array([
-        [ cp, 0.0, sp],
-        [0.0, 1.0, 0.0],
-        [-sp, 0.0, cp]
-    ])
-
-    R = Ry @ Rz
-    return v @ R.T
-
-def to_view_plane_coords(n_ship: np.ndarray, yaw_deg: float, pitch_deg: float):
-    n2 = rot_yaw_pitch(n_ship, -yaw_deg, -pitch_deg)
-
-    cos_th = np.clip(n2[:, 0], -1.0, 1.0)
-    theta = np.arccos(cos_th)
-    theta_deg = np.rad2deg(theta)
-
-    mask = theta_deg <= 90.0
-
-    phi = np.arctan2(n2[:, 2], n2[:, 1])
-    u = theta_deg * np.cos(phi)
-    v = theta_deg * np.sin(phi)
-    return u, v, mask
+    return gamma * (1.0 + beta * cos_th)
 
 def wavelength_to_rgb(wl_nm: np.ndarray) -> np.ndarray:
     wl = wl_nm
@@ -149,54 +111,27 @@ def rgb_to_hex(rgb: np.ndarray) -> list[str]:
 # =========================
 # UI
 # =========================
-st.markdown("# **STARBOW Simulator（宇宙船中心視点）**")
+st.markdown("# **STARBOW Simulator（宇宙船中心視点 / 3Dのみ）**")
 
 colL, colR = st.columns([1.05, 2.2], gap="large")
 
 with colL:
     st.markdown("## パラメータ")
-
     beta = st.slider("v/c", 0.0, 0.99, 0.50, 0.01)
     n_stars = st.slider("星の数", 1000, 20000, 11500, 500)
 
+    # シードは「同じ配置を再現したい」用途として残してOK？（スライダーじゃないので要件違反ではないはず）
     seed = st.number_input("配置シード（同じ値で同じ星配置）", value=12345, step=1)
 
-    st.markdown("---")
-    drag_3d = st.toggle("ドラッグで見回し（3Dモード）", value=False)  # デフォルトOFF
-
     st.markdown("## 表示")
-    zoom = st.slider("ズーム（大きいほど拡大）", 0.8, 6.0, 2.2, 0.05)
     star_size = st.slider("星の大きさ", 0.5, 6.0, 1.0, 0.1)
     glow = st.slider("グロー強さ", 0.0, 1.0, 0.0, 0.02)
 
     show_invisible_as_ring = st.toggle("不可視光を表示（白枠）", value=False)
 
-    st.markdown("---")
-    if "reset_clicked" not in st.session_state:
-        st.session_state.reset_clicked = 0
-
-    if st.button("初期化（向き・ズームを戻す）"):
-        st.session_state.reset_clicked += 1
-        st.session_state.yaw2d = 0.0
-        st.session_state.pitch2d = 0.0
-        st.session_state.cam3d = None
-        st.rerun()
-
 with colR:
-    if not drag_3d:
-        st.markdown(f"## v/c = {beta:.2f} （スライダーで向き）")
-        if "yaw2d" not in st.session_state:
-            st.session_state.yaw2d = 0.0
-        if "pitch2d" not in st.session_state:
-            st.session_state.pitch2d = 0.0
-
-        yaw2d = st.slider("ヨー（左右）", -180.0, 180.0, float(st.session_state.yaw2d), 1.0)
-        pitch2d = st.slider("ピッチ（上下）", -89.0, 89.0, float(st.session_state.pitch2d), 1.0)
-        st.session_state.yaw2d = yaw2d
-        st.session_state.pitch2d = pitch2d
-    else:
-        st.markdown(f"## v/c = {beta:.2f} （ドラッグで見回し）")
-        st.caption("※3Dモードではドラッグで見回し・ホイール/ピンチでズームできます。パラメータを変えても視点を維持します。")
+    st.markdown(f"## v/c = {beta:.2f} （ドラッグで見回し）")
+    st.caption("※ドラッグで見回し・ホイール/ピンチでズームできます。")
 
 # =========================
 # データ生成
@@ -214,179 +149,23 @@ colors_rgb = wavelength_to_rgb(obs_lambda)
 colors = rgb_to_hex(colors_rgb)
 
 # =========================
-# 目印
+# 目印（前後左右上下 + 船）
 # =========================
-markers = np.array([
-    [ 1.0, 0.0, 0.0],
-    [-1.0, 0.0, 0.0],
-    [ 0.0, 1.0, 0.0],
-    [ 0.0,-1.0, 0.0],
-    [ 0.0, 0.0, 1.0],
-    [ 0.0, 0.0,-1.0],
-], dtype=float)
-
+markers = np.array(
+    [
+        [ 1.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [ 0.0, 1.0, 0.0],
+        [ 0.0,-1.0, 0.0],
+        [ 0.0, 0.0, 1.0],
+        [ 0.0, 0.0,-1.0],
+    ],
+    dtype=float
+)
 marker_text = ["+x(前)", "-x(後)", "+y(右)", "-y(左)", "+z(上)", "-z(下)"]
 
 # =========================
-# 2D描画
-# =========================
-def build_2d_fig() -> go.Figure:
-    # 2Dは「軸レンジ固定(-90..90)」＋「座標側をzoomで拡大縮小」方式にする
-    # → Plotlyの状態保持に関係なく、必ずズームが星に効く
-    z = float(zoom)
-
-    u, v, hemi = to_view_plane_coords(dirs_ship, st.session_state.yaw2d, st.session_state.pitch2d)
-
-    mask2d = hemi
-
-    if show_invisible_as_ring:
-        vis_mask = mask2d & visible
-        inv_mask = mask2d & (~visible)
-    else:
-        vis_mask = mask2d & visible
-        inv_mask = np.zeros_like(mask2d, dtype=bool)  # 完全に描画しない
-
-    # ★ズームは座標側に掛ける（ここが決着ポイント）
-    uu = u * z
-    vv = v * z
-
-    fig = go.Figure()
-
-    if np.any(vis_mask):
-        fig.add_trace(
-            go.Scattergl(
-                x=uu[vis_mask],
-                y=vv[vis_mask],
-                mode="markers",
-                marker=dict(
-                    size=float(star_size * 3.0),
-                    color=np.array(colors)[vis_mask],
-                    opacity=0.9,
-                ),
-                hoverinfo="skip",
-                name="visible",
-            )
-        )
-
-    if glow > 0 and np.any(vis_mask):
-        fig.add_trace(
-            go.Scattergl(
-                x=uu[vis_mask],
-                y=vv[vis_mask],
-                mode="markers",
-                marker=dict(
-                    size=float(star_size * 9.0 * (1.0 + glow * 2.5)),
-                    color=np.array(colors)[vis_mask],
-                    opacity=float(min(0.25, 0.08 + glow * 0.25)),
-                ),
-                hoverinfo="skip",
-                name="glow",
-            )
-        )
-
-    if np.any(inv_mask):
-        fig.add_trace(
-            go.Scattergl(
-                x=uu[inv_mask],
-                y=vv[inv_mask],
-                mode="markers",
-                marker=dict(
-                    size=float(star_size * 3.2),
-                    color="rgba(0,0,0,0)",
-                    line=dict(color="rgba(255,255,255,0.9)", width=1.2),
-                    opacity=0.9,
-                ),
-                hoverinfo="skip",
-                name="invisible",
-            )
-        )
-
-    # 目印（前方半球のみ）※これもズームに追従させる
-    m_rot = rot_yaw_pitch(markers, -st.session_state.yaw2d, -st.session_state.pitch2d)
-    cos_th_m = np.clip(m_rot[:, 0], -1, 1)
-    th_m = np.rad2deg(np.arccos(cos_th_m))
-    m_mask = th_m <= 90.0
-    phi_m = np.arctan2(m_rot[:, 2], m_rot[:, 1])
-    mu = th_m * np.cos(phi_m) * z
-    mv = th_m * np.sin(phi_m) * z
-
-    fig.add_trace(
-        go.Scattergl(
-            x=mu[m_mask],
-            y=mv[m_mask],
-            mode="markers+text",
-            marker=dict(size=10, color="white"),
-            text=np.array(marker_text)[m_mask],
-            textposition="top center",
-            textfont=dict(color="white", size=12),
-            hoverinfo="skip",
-            name="markers",
-        )
-    )
-
-    # リング（30/60/90）※これもズームに追従（拡大すると見切れて“ズーム”になる）
-    for rr, w in [(30, 1.2), (60, 1.4), (90, 2.2)]:
-        t = np.linspace(0, 2*np.pi, 400)
-        rrz = rr * z
-        fig.add_trace(
-            go.Scatter(
-                x=rrz*np.cos(t),
-                y=rrz*np.sin(t),
-                mode="lines",
-                line=dict(color="rgba(255,255,255,0.20)", width=w),
-                hoverinfo="skip",
-                showlegend=False
-            )
-        )
-
-    # 十字（視野の基準なので固定のまま）
-    fig.add_trace(
-        go.Scatter(
-            x=[-90, 90], y=[0, 0],
-            mode="lines",
-            line=dict(color="rgba(140,180,255,0.35)", width=2),
-            hoverinfo="skip",
-            showlegend=False
-        )
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=[0, 0], y=[-90, 90],
-            mode="lines",
-            line=dict(color="rgba(140,180,255,0.35)", width=2),
-            hoverinfo="skip",
-            showlegend=False
-        )
-    )
-    lim = 90.0 / zoom
-
-
-    fig.update_layout(
-        paper_bgcolor=BG,
-        plot_bgcolor=BG,
-        margin=dict(l=10, r=10, t=10, b=10),
-        xaxis=dict(
-            visible=False,
-            range=[-lim, lim],
-            autorange=False,
-            fixedrange=True,
-            scaleanchor="y",
-            scaleratio=1,
-        ),
-        yaxis=dict(
-            visible=False,
-            range=[-lim, lim],
-            autorange=False,
-            fixedrange=True,
-        ),
-        showlegend=False,
-        # 2Dの見回し状態はスライダーで変わるのが正しいので zoom も含める
-    )
-
-    return fig
-
-# =========================
-# 3D描画（ここは絶対そのまま）
+# 3D描画（ここが本体）
 # =========================
 def build_3d_fig() -> go.Figure:
     if show_invisible_as_ring:
@@ -400,6 +179,7 @@ def build_3d_fig() -> go.Figure:
 
     fig = go.Figure()
 
+    # glow
     if glow > 0 and np.any(vis_mask):
         fig.add_trace(
             go.Scatter3d(
@@ -417,6 +197,7 @@ def build_3d_fig() -> go.Figure:
             )
         )
 
+    # visible
     if np.any(vis_mask):
         fig.add_trace(
             go.Scatter3d(
@@ -434,6 +215,7 @@ def build_3d_fig() -> go.Figure:
             )
         )
 
+    # invisible (white outline)
     if np.any(inv_mask):
         fig.add_trace(
             go.Scatter3d(
@@ -452,6 +234,7 @@ def build_3d_fig() -> go.Figure:
             )
         )
 
+    # axis markers
     fig.add_trace(
         go.Scatter3d(
             x=m3[:, 0],
@@ -467,6 +250,7 @@ def build_3d_fig() -> go.Figure:
         )
     )
 
+    # ship at origin
     fig.add_trace(
         go.Scatter3d(
             x=[0], y=[0], z=[0],
@@ -480,7 +264,8 @@ def build_3d_fig() -> go.Figure:
         )
     )
 
-    lim = 1.25 / zoom
+    # 固定レンジ（ズームはユーザー操作に任せる）
+    lim = 1.25
 
     fig.update_layout(
         paper_bgcolor=BG,
@@ -507,25 +292,11 @@ def build_3d_fig() -> go.Figure:
 # =========================
 # 描画
 # =========================
-if drag_3d:
-    fig = build_3d_fig()
-    st.plotly_chart(
-        fig,
-        use_container_width=True,
-        config=dict(scrollZoom=True, displaylogo=False),
-    )
-else:
-    fig = build_2d_fig()
-    st.plotly_chart(
-        fig,
-        use_container_width=True,
-        config=dict(scrollZoom=False, displaylogo=False),
-        key=f"plot2d-{zoom:.2f}-{st.session_state.yaw2d:.0f}-{st.session_state.pitch2d:.0f}-{st.session_state.reset_clicked}",
-    )
+fig = build_3d_fig()
+st.plotly_chart(
+    fig,
+    use_container_width=True,
+    config=dict(scrollZoom=True, displaylogo=False),
+)
 
 st.caption("※不可視光は「不可視光を表示（白枠）」OFF のとき完全に描画しません。ONで白枠として表示します。")
-
-
-
-
-
