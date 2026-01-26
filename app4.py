@@ -5,9 +5,10 @@ import plotly.graph_objects as go
 # =========================
 # 基本設定
 # =========================
-st.set_page_config(page_title="STARBOW simulator (3D)", layout="wide")
+st.set_page_config(page_title="STARBOW simulator(3D)", layout="wide")
 
 BG = "#060a14"
+PANEL_BG = "#060a14"
 TXT = "#ffffff"
 
 st.markdown(
@@ -19,6 +20,9 @@ st.markdown(
       }}
       h1, h2, h3, p, div, span, label {{
         color: {TXT} !important;
+      }}
+      [data-testid="stSidebar"], [data-testid="stSidebarContent"] {{
+        background: {PANEL_BG};
       }}
       .stButton > button {{
         color: {TXT} !important;
@@ -34,7 +38,7 @@ st.markdown(
 )
 
 # =========================
-# 物理
+# 物理・幾何ユーティリティ
 # =========================
 def random_unit_vectors(n: int, seed: int) -> np.ndarray:
     rng = np.random.default_rng(seed)
@@ -45,24 +49,30 @@ def random_unit_vectors(n: int, seed: int) -> np.ndarray:
 def aberrate_directions(n: np.ndarray, beta: float) -> np.ndarray:
     if beta <= 0:
         return n.copy()
+
     gamma = 1.0 / np.sqrt(1.0 - beta**2)
-    nx, ny, nz = n[:, 0], n[:, 1], n[:, 2]
-    denom = 1.0 - beta * nx
+
+    nx = n[:, 0]
+    ny = n[:, 1]
+    nz = n[:, 2]
+
+    denom = (1.0 - beta * nx)
     denom = np.clip(denom, 1e-12, None)
 
     npx = (nx - beta) / denom
     npy = ny / (gamma * denom)
     npz = nz / (gamma * denom)
 
-    v = np.stack([npx, npy, npz], axis=1)
-    v /= np.linalg.norm(v, axis=1, keepdims=True)
-    return v
+    npv = np.stack([npx, npy, npz], axis=1)
+    npv /= np.linalg.norm(npv, axis=1, keepdims=True)
+    return npv
 
 def doppler_factor(n_prime: np.ndarray, beta: float) -> np.ndarray:
     if beta <= 0:
         return np.ones(len(n_prime))
     gamma = 1.0 / np.sqrt(1.0 - beta**2)
-    return gamma * (1.0 + beta * n_prime[:, 0])
+    cos_th = n_prime[:, 0]
+    return gamma * (1.0 + beta * cos_th)
 
 def wavelength_to_rgb(wl_nm: np.ndarray) -> np.ndarray:
     wl = wl_nm
@@ -101,34 +111,44 @@ def rgb_to_hex(rgb: np.ndarray) -> list[str]:
 # =========================
 # UI
 # =========================
-st.markdown("# **STARBOW simulator (3D)**")
+st.markdown("# **STARBOW simulator(3D)**")
 
-colL, colR = st.columns([1, 3], gap="large")
+colL, colR = st.columns([1.05, 2.2], gap="large")
 
 with colL:
-    beta = st.slider("v/c", 0.0, 0.99, 0.0, 0.01)
-    n_stars = st.slider("星の数", 1000, 20000, 10000, 500)
+    st.markdown("## パラメータ")
+    beta = st.slider("v/c", 0.0, 0.99, 0.00, 0.01)             # 初期0
+    n_stars = st.slider("星の数", 1000, 20000, 10000, 500)      # 初期10000
+
     seed = st.number_input("配置シード（同じ値で同じ星配置）", value=12345, step=1)
 
     st.markdown("## 表示")
     star_size = st.slider("星の大きさ", 0.5, 6.0, 1.0, 0.1)
     glow = st.slider("グロー強さ", 0.0, 1.0, 0.0, 0.02)
-    show_invisible = st.toggle("不可視光を表示（白枠）", value=False)
+
+    show_invisible_as_ring = st.toggle("不可視光を表示（白枠）", value=False)
+
+with colR:
+    st.markdown(f"## v/c = {beta:.2f} （ドラッグで見回し）")
+    st.caption("※ドラッグで見回し・ホイール/ピンチでズームできます。")
 
 # =========================
 # データ生成
 # =========================
 base_dirs = random_unit_vectors(int(n_stars), int(seed))
-dirs_ship = aberrate_directions(base_dirs, beta)
 
+base_lambda_nm = 560.0
+dirs_ship = aberrate_directions(base_dirs, beta)
 D = doppler_factor(dirs_ship, beta)
-obs_lambda = 560.0 / D
+obs_lambda = base_lambda_nm / D
+
 visible = (obs_lambda >= 380.0) & (obs_lambda <= 780.0)
 
-colors = rgb_to_hex(wavelength_to_rgb(obs_lambda))
+colors_rgb = wavelength_to_rgb(obs_lambda)
+colors = rgb_to_hex(colors_rgb)
 
 # =========================
-# 目印（前後左右上下）
+# 目印（前後左右上下 + 船）
 # =========================
 markers = np.array(
     [
@@ -144,73 +164,63 @@ markers = np.array(
 marker_text = ["+x(前)", "-x(後)", "+y(右)", "-y(左)", "+z(上)", "-z(下)"]
 
 # =========================
-# ★初期配置（あの“完璧な距離感”）を固定しつつ
-#   初期向きだけ +x 正面にする
+# 3D描画（本体）
 # =========================
-# 以前の「良い初期配置」＝軸レンジを固定して、近すぎず遠すぎない見え方にする
-LIM = 1.25
+def build_3d_fig() -> go.Figure:
+    if show_invisible_as_ring:
+        vis_mask = visible
+        inv_mask = ~visible
+    else:
+        vis_mask = visible
+        inv_mask = np.zeros_like(visible, dtype=bool)
 
-# カメラは「+x方向から原点を見る」＝+xマーカーがshipと重なる
-# ただし完全に( y=z=0 )だと操作感が不安定になることがあるので、極小オフセットを入れる
-DEFAULT_CAMERA = dict(
-    eye=dict(x=2.2, y=0.001, z=0.001),
-    center=dict(x=0.0, y=0.0, z=0.0),
-    up=dict(x=0.0, y=0.0, z=1.0),
-)
+    m3 = markers * 1.15
 
-# パラメータ変更で視点が戻らないように保持
-if "cam3d" not in st.session_state:
-    st.session_state.cam3d = DEFAULT_CAMERA
+    fig = go.Figure()
 
-# =========================
-# 3D描画
-# =========================
-fig = go.Figure()
-
-# グロー（可視星）
-if glow > 0 and np.any(visible):
-    fig.add_trace(
-        go.Scatter3d(
-            x=dirs_ship[visible, 0],
-            y=dirs_ship[visible, 1],
-            z=dirs_ship[visible, 2],
-            mode="markers",
-            marker=dict(
-                size=float(star_size * 6.0 * (1.0 + glow * 2.0)),
-                color=np.array(colors)[visible],
-                opacity=float(min(0.20, 0.06 + glow * 0.20)),
-            ),
-            hoverinfo="skip",
-            name="glow",
-        )
-    )
-
-# 可視星
-fig.add_trace(
-    go.Scatter3d(
-        x=dirs_ship[visible, 0],
-        y=dirs_ship[visible, 1],
-        z=dirs_ship[visible, 2],
-        mode="markers",
-        marker=dict(
-            size=float(star_size * 2.3),
-            color=np.array(colors)[visible],
-            opacity=0.95,
-        ),
-        hoverinfo="skip",
-        name="visible",
-    )
-)
-
-# 不可視（白枠）
-if show_invisible:
-    inv = ~visible
-    if np.any(inv):
+    # glow
+    if glow > 0 and np.any(vis_mask):
         fig.add_trace(
             go.Scatter3d(
-                x=dirs_ship[inv, 0],
-                y=dirs_ship[inv, 1],
-                z=dirs_ship[inv, 2],
+                x=dirs_ship[vis_mask, 0],
+                y=dirs_ship[vis_mask, 1],
+                z=dirs_ship[vis_mask, 2],
+                mode="markers",
+                marker=dict(
+                    size=float(star_size * 6.0 * (1.0 + glow * 2.0)),
+                    color=np.array(colors)[vis_mask],
+                    opacity=float(min(0.20, 0.06 + glow * 0.20)),
+                ),
+                hoverinfo="skip",
+                name="glow",
+            )
+        )
+
+    # visible
+    if np.any(vis_mask):
+        fig.add_trace(
+            go.Scatter3d(
+                x=dirs_ship[vis_mask, 0],
+                y=dirs_ship[vis_mask, 1],
+                z=dirs_ship[vis_mask, 2],
+                mode="markers",
+                marker=dict(
+                    size=float(star_size * 2.3),
+                    color=np.array(colors)[vis_mask],
+                    opacity=0.95,
+                ),
+                hoverinfo="skip",
+                name="visible",
+            )
+        )
+
+    # invisible (white outline)
+    if np.any(inv_mask):
+        fig.add_trace(
+            go.Scatter3d(
+                x=dirs_ship[inv_mask, 0],
+                y=dirs_ship[inv_mask, 1],
+                z=dirs_ship[inv_mask, 2],
                 mode="markers",
                 marker=dict(
                     size=float(star_size * 2.5),
@@ -223,57 +233,73 @@ if show_invisible:
             )
         )
 
-# 方向マーカー（少し外側）
-m3 = markers * 1.15
-fig.add_trace(
-    go.Scatter3d(
-        x=m3[:, 0],
-        y=m3[:, 1],
-        z=m3[:, 2],
-        mode="markers+text",
-        marker=dict(size=7, color="white", opacity=0.95),
-        text=marker_text,
-        textposition="top center",
-        textfont=dict(color="white", size=12),
-        hoverinfo="skip",
-        name="markers",
+    # axis markers
+    fig.add_trace(
+        go.Scatter3d(
+            x=m3[:, 0],
+            y=m3[:, 1],
+            z=m3[:, 2],
+            mode="markers+text",
+            marker=dict(size=7, color="white", opacity=0.95),
+            text=marker_text,
+            textposition="top center",
+            textfont=dict(color="white", size=12),
+            hoverinfo="skip",
+            name="markers",
+        )
     )
-)
 
-# ship（今は安全に球体のまま：ロケット形は“後で”でもOK）
-fig.add_trace(
-    go.Scatter3d(
-        x=[0], y=[0], z=[0],
-        mode="markers+text",
-        marker=dict(size=6, color="white"),
-        text=["ship"],
-        textposition="bottom center",
-        textfont=dict(color="white", size=12),
-        hoverinfo="skip",
-        name="ship",
+    # ship at origin
+    fig.add_trace(
+        go.Scatter3d(
+            x=[0], y=[0], z=[0],
+            mode="markers+text",
+            marker=dict(size=6, color="white"),
+            text=["ship"],
+            textposition="bottom center",
+            textfont=dict(color="white", size=12),
+            hoverinfo="skip",
+            name="ship",
+        )
     )
-)
 
-fig.update_layout(
-    paper_bgcolor=BG,
-    plot_bgcolor=BG,
-    margin=dict(l=10, r=10, t=10, b=10),
-    scene=dict(
-        xaxis=dict(visible=False, range=[-LIM, LIM]),
-        yaxis=dict(visible=False, range=[-LIM, LIM]),
-        zaxis=dict(visible=False, range=[-LIM, LIM]),
-        bgcolor=BG,
-        aspectmode="cube",
-        camera=st.session_state.cam3d,  # ★保持
-    ),
-    showlegend=False,
-    uirevision="3d-keep-camera",  # ★パラメータ変更でも視点維持
-)
+    # 初期向き：+x が画面中心に来るように固定（位置は維持したいので距離感は同程度に）
+    # eye は「原点からカメラの位置」。center=(0,0,0)を見る。
+    # +x を正面にしたい → カメラを -x 側に置いて原点を見る。
+    camera = dict(
+        eye=dict(x=-0.25, y=0.25, z=0.25),
+        center=dict(x=0.0, y=0.0, z=0.0),
+        up=dict(x=0.0, y=0.0, z=1.0),
+    )
 
+    lim = 1.25
+
+    fig.update_layout(
+        paper_bgcolor=BG,
+        plot_bgcolor=BG,
+        margin=dict(l=10, r=10, t=10, b=10),
+        scene=dict(
+            xaxis=dict(visible=False, range=[-lim, lim]),
+            yaxis=dict(visible=False, range=[-lim, lim]),
+            zaxis=dict(visible=False, range=[-lim, lim]),
+            bgcolor=BG,
+            aspectmode="cube",
+            camera=camera,
+        ),
+        showlegend=False,
+        uirevision="3d-keep-camera",
+    )
+
+    return fig
+
+# =========================
+# 描画
+# =========================
+fig = build_3d_fig()
 st.plotly_chart(
     fig,
     use_container_width=True,
     config=dict(scrollZoom=True, displaylogo=False),
 )
 
-st.caption("※不可視光は「不可視光を表示（白枠）」OFF のとき完全に表示しません。ONで白枠として表示します。")
+st.caption("※不可視光は「不可視光を表示（白枠）」OFF のとき完全に描画しません。ONで白枠として表示します。")
