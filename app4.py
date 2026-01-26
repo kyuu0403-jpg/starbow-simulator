@@ -1,123 +1,62 @@
-import streamlit as st
+   import streamlit as st
 import numpy as np
-import plotly.graph_objects as go
+import matplotlib.pyplot as plt
 
-st.set_page_config(page_title="STARBOW Simulator", layout="wide")
+st.set_page_config(page_title="STARBOW Simulator (Center View)", layout="wide")
 
 # ----------------------------
 # UI
 # ----------------------------
-st.title("STARBOW Simulator")
+st.title("STARBOW Simulator（中心視点）")
 
 col1, col2 = st.columns([1.1, 1.9], gap="large")
 with col1:
     beta = st.slider("v/c", 0.0, 0.99, 0.0, 0.01)
-    n_stars = st.slider("星の数", 50, 2000, 800, 50)
+    n_stars = st.slider("星の数", 200, 20000, 4000, 200)
     seed = st.number_input("星の配置 Seed（同じ値なら同じ星空）", min_value=0, max_value=999999, value=1234, step=1)
-    add_orion = st.checkbox("オリオン座（7点）を追加", True)
 
-    # 追加：見た目調整（重くなければ上げてOK）
-    beaming_p = st.slider("ビーミング強度 p（D^p）", 1.0, 3.0, 2.2, 0.1)
-    size_gain = st.slider("星のサイズ倍率", 0.5, 2.5, 1.2, 0.1)
+    yaw_deg = st.slider("視線（Yaw：左右）[deg]", -180, 180, 0, 1)
+    pitch_deg = st.slider("視線（Pitch：上下）[deg]", -89, 89, 0, 1)
+
+    fov_deg = st.slider("視野角（FOV）[deg]", 60, 160, 120, 5)
+
+    base_lambda = st.slider("基準波長 λ0 [nm]（色を統一）", 520, 650, 580, 1)  # 黄色寄りデフォ
+    glow = st.slider("グロー（にじみ）", 0.0, 1.0, 0.35, 0.05)
 
 with col2:
     st.markdown(
         """
-- 画面を **ドラッグ** すると、視点を自由に回して **正面以外の景色**を見られます  
+- 視点は **宇宙船（中心）**。Yaw/Pitchで見回しできます  
 - 速度を上げると  
-  - **光行差**：進行方向へ星が集まる  
-  - **ドップラー**：前方ほど青、後方ほど赤（可視外は暗く消える）  
-  - **ビーミング**：前方が明るくなる  
+  - **光行差**で進行方向側へ星が集まる  
+  - **ドップラー効果**で中心は青寄り、外側は赤寄りになりやすい  
+  - **可視外（380–780nm）**は暗くして見えなくします（リングが出やすい）
         """
     )
 
 # ----------------------------
-# Style (C: night sky)
+# Style
 # ----------------------------
-BG = "#0E0F2B"   # 夜空っぽい青みの黒
-FG = "#FFFFFF"   # 白文字
-GRID = "rgba(255,255,255,0.08)"  # 薄いグリッド
+BG = (14/255, 15/255, 43/255)  # #0E0F2B
+FG = (1.0, 1.0, 1.0)
 
 # ----------------------------
-# Physics helpers
+# Math helpers
 # ----------------------------
-def wavelength_to_rgb_visible_only(wl_nm: float):
-    """
-    380-780nm の可視域のみRGB化（0..1）。可視外は None を返す（背景と同化させるため）。
-    """
-    w = float(wl_nm)
-    if w < 380.0 or w > 780.0:
-        return None
+def rot_z(a):
+    ca, sa = np.cos(a), np.sin(a)
+    return np.array([[ca, -sa, 0.0],
+                     [sa,  ca, 0.0],
+                     [0.0, 0.0, 1.0]], dtype=float)
 
-    if 380 <= w < 440:
-        r = -(w - 440) / (440 - 380)
-        g = 0.0
-        b = 1.0
-    elif 440 <= w < 490:
-        r = 0.0
-        g = (w - 440) / (490 - 440)
-        b = 1.0
-    elif 490 <= w < 510:
-        r = 0.0
-        g = 1.0
-        b = -(w - 510) / (510 - 490)
-    elif 510 <= w < 580:
-        r = (w - 510) / (580 - 510)
-        g = 1.0
-        b = 0.0
-    elif 580 <= w < 645:
-        r = 1.0
-        g = -(w - 645) / (645 - 580)
-        b = 0.0
-    else:  # 645..780
-        r = 1.0
-        g = 0.0
-        b = 0.0
+def rot_y(a):
+    ca, sa = np.cos(a), np.sin(a)
+    return np.array([[ ca, 0.0, sa],
+                     [0.0, 1.0, 0.0],
+                     [-sa, 0.0, ca]], dtype=float)
 
-    # 端の暗さ補正
-    if 380 <= w < 420:
-        f = 0.3 + 0.7 * (w - 380) / (420 - 380)
-    elif 420 <= w <= 700:
-        f = 1.0
-    else:  # 700..780
-        f = 0.3 + 0.7 * (780 - w) / (780 - 700)
-
-    return (r * f, g * f, b * f)
-
-def doppler_factor_lab_to_ship(n_lab_unit: np.ndarray, beta: float) -> float:
-    """
-    nu' = nu * gamma*(1 + beta*n_x)  （ブースト +X）
-    D = gamma*(1 + beta*n_x)
-    """
-    if beta == 0.0:
-        return 1.0
-    gamma = 1.0 / np.sqrt(1.0 - beta * beta)
-    nx = float(n_lab_unit[0])
-    return gamma * (1.0 + beta * nx)
-
-def aberrate_dir_lab_to_ship(n_lab_unit: np.ndarray, beta: float) -> np.ndarray:
-    """
-    光行差：lab方向n を ship方向n'へ（+Xブースト）
-    """
-    if beta == 0.0:
-        return n_lab_unit.copy()
-
-    nx, ny, nz = n_lab_unit
-    gamma = 1.0 / np.sqrt(1.0 - beta * beta)
-    denom = (1.0 + beta * nx)
-
-    nx_p = (nx + beta) / denom
-    ny_p = ny / (gamma * denom)
-    nz_p = nz / (gamma * denom)
-
-    out = np.array([nx_p, ny_p, nz_p], dtype=float)
-    out /= np.linalg.norm(out)
-    return out
-
-def random_unit_vectors(rng: np.random.Generator, m: int) -> np.ndarray:
-    """
-    等方的に球面上へ m 点（単位ベクトル）
-    """
+def random_unit_vectors(rng, m):
+    # isotropic on sphere
     u = rng.random(m)
     v = rng.random(m)
     theta = np.arccos(1 - 2*u)
@@ -127,151 +66,147 @@ def random_unit_vectors(rng: np.random.Generator, m: int) -> np.ndarray:
     z = np.sin(theta) * np.sin(phi)
     return np.stack([x, y, z], axis=1)
 
+def aberrate_dir_lab_to_ship(n_lab, beta):
+    # boost +X
+    if beta == 0.0:
+        return n_lab.copy()
+    nx, ny, nz = n_lab
+    gamma = 1.0 / np.sqrt(1.0 - beta*beta)
+    denom = (1.0 + beta * nx)
+    nx_p = (nx + beta) / denom
+    ny_p = ny / (gamma * denom)
+    nz_p = nz / (gamma * denom)
+    out = np.array([nx_p, ny_p, nz_p], dtype=float)
+    return out / np.linalg.norm(out)
+
+def doppler_factor(n_lab, beta):
+    if beta == 0.0:
+        return 1.0
+    gamma = 1.0 / np.sqrt(1.0 - beta*beta)
+    return gamma * (1.0 + beta * float(n_lab[0]))
+
+def wavelength_to_rgb(wl_nm):
+    # return None if invisible
+    w = float(wl_nm)
+    if w < 380.0 or w > 780.0:
+        return None
+
+    if 380 <= w < 440:
+        r = -(w - 440) / (440 - 380); g = 0.0; b = 1.0
+    elif 440 <= w < 490:
+        r = 0.0; g = (w - 440) / (490 - 440); b = 1.0
+    elif 490 <= w < 510:
+        r = 0.0; g = 1.0; b = -(w - 510) / (510 - 490)
+    elif 510 <= w < 580:
+        r = (w - 510) / (580 - 510); g = 1.0; b = 0.0
+    elif 580 <= w < 645:
+        r = 1.0; g = -(w - 645) / (645 - 580); b = 0.0
+    else:
+        r = 1.0; g = 0.0; b = 0.0
+
+    # edge intensity correction
+    if 380 <= w < 420:
+        f = 0.3 + 0.7 * (w - 380) / (420 - 380)
+    elif 420 <= w <= 700:
+        f = 1.0
+    else:
+        f = 0.3 + 0.7 * (780 - w) / (780 - 700)
+
+    return (r*f, g*f, b*f)
+
 # ----------------------------
-# Generate star catalog (lab frame)
+# Generate stars (LAB frame)
 # ----------------------------
 rng = np.random.default_rng(int(seed))
+dirs_lab = random_unit_vectors(rng, int(n_stars))
 
-# ランダム星：可視外も含む波長分布（リングが出やすい）
-dirs_lab = random_unit_vectors(rng, n_stars)
+# 全星の基準波長を統一（黄色付近）
+wl0 = np.full(int(n_stars), float(base_lambda), dtype=float)
 
-wl0 = np.clip(rng.normal(650.0, 320.0, n_stars), 200.0, 1600.0)  # 紫外〜赤外まで
-base = rng.random(n_stars)
-brightness0 = 0.10 + 0.90 * (base**2)  # 0.10..1.0
-
-# オリオン（教材用）
-if add_orion:
-    # 以前の「スライドっぽい」7点を前方半球に置く（便宜的）
-    orion_uv = np.array([
-        [0.58, 0.58],
-        [0.78, 0.52],
-        [0.68, 0.44],
-        [0.66, 0.34],
-        [0.72, 0.30],
-        [0.78, 0.26],
-        [0.84, 0.05],
-    ], dtype=float)
-
-    # azimuthal equidistant を逆にして方向ベクトルへ（前方 = +X）
-    theta_max = np.pi/2
-    def uv_to_dir(u, v):
-        r = float(np.sqrt(u*u + v*v))
-        r = np.clip(r, 0.0, 1.0)
-        theta = r * theta_max
-        phi = np.arctan2(v, u)
-        nx = np.cos(theta)
-        s = np.sin(theta)
-        ny = s * np.cos(phi)
-        nz = s * np.sin(phi)
-        out = np.array([nx, ny, nz], dtype=float)
-        return out / np.linalg.norm(out)
-
-    orion_dirs = np.array([uv_to_dir(u, v) for u, v in orion_uv])
-    orion_wl0 = np.array([560, 520, 600, 500, 560, 650, 480], dtype=float)
-    orion_b = np.array([0.9, 0.7, 0.7, 0.6, 0.85, 0.8, 0.55], dtype=float)
-
-    dirs_lab = np.vstack([orion_dirs, dirs_lab])
-    wl0 = np.concatenate([orion_wl0, wl0])
-    brightness0 = np.concatenate([orion_b, brightness0])
+# ほんの少しだけ明るさバラつき（見やすさ）
+brightness0 = 0.4 + 0.6 * (rng.random(int(n_stars))**2)
 
 # ----------------------------
-# Apply STARBOW: aberration + doppler + beaming
+# Apply physics: aberration + doppler + beaming
 # ----------------------------
 beta_f = float(beta)
 gamma = 1.0 / np.sqrt(1.0 - beta_f*beta_f) if beta_f > 0 else 1.0
 
-dirs_ship = np.empty_like(dirs_lab)
-colors = []
-sizes = []
+dirs_ship = np.array([aberrate_dir_lab_to_ship(n, beta_f) for n in dirs_lab])
 
-for i in range(dirs_lab.shape[0]):
+# view rotation (ship -> camera)
+yaw = np.deg2rad(float(yaw_deg))
+pitch = np.deg2rad(float(pitch_deg))
+R = rot_z(yaw) @ rot_y(pitch)
+dirs_cam = (R.T @ dirs_ship.T).T  # ship -> cam
+
+# projection: pinhole with FOV
+half = np.deg2rad(float(fov_deg) / 2.0)
+tan_lim = np.tan(half)
+
+xs, ys, cols, sizes = [], [], [], []
+
+for i in range(int(n_stars)):
     nlab = dirs_lab[i]
-    nlab = nlab / np.linalg.norm(nlab)
+    ncam = dirs_cam[i]
 
-    # 光行差（方向）
-    nship = aberrate_dir_lab_to_ship(nlab, beta_f)
-    dirs_ship[i] = nship
-
-    # ドップラー（色）
-    D = doppler_factor_lab_to_ship(nlab, beta_f)
-    wl_obs = wl0[i] / D   # クリップしない
-    rgb = wavelength_to_rgb_visible_only(wl_obs)
-
-    # 不可視 → 背景と同化（見えない）
-    if rgb is None:
-        colors.append(f"rgba(14,15,43,0.0)")  # BGと同化（透明）
-        sizes.append(0.0)
+    # show only front hemisphere in camera: x>0 (forward)
+    if ncam[0] <= 0:
         continue
 
-    # ビーミング（見た目用に圧縮）
-    I = brightness0[i] * (D ** float(beaming_p))
-    I_disp = np.log1p(3.0 * I)          # 圧縮
+    # screen coords
+    x = (ncam[1] / ncam[0]) / tan_lim
+    y = (ncam[2] / ncam[0]) / tan_lim
+    if abs(x) > 1.0 or abs(y) > 1.0:
+        continue
+
+    D = doppler_factor(nlab, beta_f)
+    wl_obs = wl0[i] / D  # no clip
+
+    rgb = wavelength_to_rgb(wl_obs)
+    if rgb is None:
+        continue  # invisible -> background (not plotted)
+
+    # beaming (visual)
+    I = brightness0[i] * (D ** 2.2)
+    I_disp = np.log1p(2.5 * I)
     I_disp = float(np.clip(I_disp, 0.0, 3.0))
 
-    # サイズ
-    s = (4.0 + 10.0 * I_disp) * float(size_gain)
-    s = float(np.clip(s, 1.0, 24.0))
-
-    r, g, b = rgb
-    # 明るさで少し増幅（ただし白潰れしにくい程度）
-    boost = 0.6 + 0.25 * I_disp
-    rr = min(1.0, r * boost)
-    gg = min(1.0, g * boost)
-    bb = min(1.0, b * boost)
-    colors.append(f"rgba({int(rr*255)},{int(gg*255)},{int(bb*255)},1.0)")
+    s = 4.0 + 10.0 * I_disp
+    xs.append(x); ys.append(y)
+    cols.append(rgb)
     sizes.append(s)
 
-sizes = np.array(sizes, dtype=float)
-
-# 可視星だけ残す（速度改善＆不要な点を消す）
-mask = sizes > 0
-dirs_vis = dirs_ship[mask]
-colors_vis = np.array(colors, dtype=object)[mask]
-sizes_vis = sizes[mask]
+xs = np.array(xs); ys = np.array(ys)
+cols = np.array(cols); sizes = np.array(sizes)
 
 # ----------------------------
-# Plotly 3D (drag-to-look)
+# Plot (night sky + glow)
 # ----------------------------
-x, y, z = dirs_vis[:, 0], dirs_vis[:, 1], dirs_vis[:, 2]
+fig, ax = plt.subplots(figsize=(8, 8), dpi=160)
+fig.patch.set_facecolor(BG)
+ax.set_facecolor(BG)
 
-fig = go.Figure()
+ax.set_xlim(-1, 1)
+ax.set_ylim(-1, 1)
+ax.set_aspect("equal", "box")
+ax.set_xticks([]); ax.set_yticks([])
+for spine in ax.spines.values():
+    spine.set_visible(False)
 
-fig.add_trace(go.Scatter3d(
-    x=x, y=y, z=z,
-    mode="markers",
-    marker=dict(
-        size=sizes_vis,
-        color=colors_vis,
-        opacity=1.0
-    ),
-    hoverinfo="skip"
-))
+# glow: draw a blurred layer first (bigger, transparent)
+if glow > 0 and len(xs) > 0:
+    ax.scatter(xs, ys, s=(sizes * (18 * glow)), c=cols, alpha=0.10 + 0.20*glow, edgecolors="none")
 
-# “天球”っぽさ：軸は消して、背景を夜空に
-fig.update_layout(
-    scene=dict(
-        xaxis=dict(visible=False, showbackground=False),
-        yaxis=dict(visible=False, showbackground=False),
-        zaxis=dict(visible=False, showbackground=False),
-        bgcolor=BG,
-        aspectmode="cube",
-        # 初期カメラ：+X方向（進行方向）を見る
-        camera=dict(
-            eye=dict(x=1.8, y=0.0, z=0.0),
-            up=dict(x=0.0, y=0.0, z=1.0)
-        )
-    ),
-    paper_bgcolor=BG,
-    plot_bgcolor=BG,
-    font=dict(color=FG, size=16),
-    margin=dict(l=0, r=0, t=40, b=0),
-    title=dict(text=f"v/c = {beta_f:.2f}　（ドラッグで見回し）", x=0.02, y=0.98, font=dict(color=FG, size=22)),
-    showlegend=False,
-)
+# main stars
+ax.scatter(xs, ys, s=(sizes * 7.0), c=cols, alpha=0.95, edgecolors="none")
 
-st.plotly_chart(fig, use_container_width=True, config={
-    "displayModeBar": True,
-    "scrollZoom": True
-})
+# title (white)
+ax.set_title(f"v/c = {beta_f:.2f}", color=FG, fontsize=22, pad=14)
 
-st.caption("不可視（380–780nmの外）になった星は背景と同化して見えなくしています。Seed は NumPy の乱数生成器に渡しており、引用ではなく「再現性のための番号」です。")
+# thin white frame (like window)
+ax.add_patch(plt.Rectangle((-1, -1), 2, 2, fill=False, linewidth=1.2, edgecolor=FG, alpha=0.25))
+
+st.pyplot(fig, clear_figure=True)
+
+st.caption("不可視（380–780nm外）は描画せず背景と同化させています。星は全球で一様に配置（乱数）され、Seedで再現可能です。")
