@@ -379,7 +379,6 @@ def build_2d_fig() -> go.Figure:
         ),
         showlegend=False,
         # 2Dの見回し状態はスライダーで変わるのが正しいので zoom も含める
-        uirevision=f"2d-{st.session_state.reset_clicked}-{z:.2f}",
     )
 
     return fig
@@ -519,6 +518,8 @@ else:
         fig,
         use_container_width=True,
         config=dict(scrollZoom=False, displaylogo=False),
+        key=f"plot2d-{beta:.2f}-{zoom:.2f}-{st.session_state.yaw2d:.0f}-{st.session_state.pitch2d:.0f}-{st.session_state.reset_clicked}",
     )
 
 st.caption("※不可視光は「不可視光を表示（白枠）」OFF のとき完全に描画しません。ONで白枠として表示します。")
+
