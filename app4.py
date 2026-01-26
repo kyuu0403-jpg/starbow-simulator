@@ -1,4 +1,4 @@
-   import streamlit as st
+import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -210,3 +210,4 @@ ax.add_patch(plt.Rectangle((-1, -1), 2, 2, fill=False, linewidth=1.2, edgecolor=
 st.pyplot(fig, clear_figure=True)
 
 st.caption("不可視（380–780nm外）は描画せず背景と同化させています。星は全球で一様に配置（乱数）され、Seedで再現可能です。")
+
