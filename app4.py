@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 # =========================
 # 基本設定
 # =========================
-st.set_page_config(page_title="STARBOW Simulator (3D Only)", layout="wide")
+st.set_page_config(page_title="STARBOW simulator(3D)", layout="wide")
 
 BG = "#060a14"
 PANEL_BG = "#060a14"
@@ -111,16 +111,15 @@ def rgb_to_hex(rgb: np.ndarray) -> list[str]:
 # =========================
 # UI
 # =========================
-st.markdown("# **STARBOW Simulator（宇宙船中心視点 / 3Dのみ）**")
+st.markdown("# **STARBOW simulator(3D)**")
 
 colL, colR = st.columns([1.05, 2.2], gap="large")
 
 with colL:
     st.markdown("## パラメータ")
-    beta = st.slider("v/c", 0.0, 0.99, 0.50, 0.01)
-    n_stars = st.slider("星の数", 1000, 20000, 11500, 500)
+    beta = st.slider("v/c", 0.0, 0.99, 0.00, 0.01)             # 初期0
+    n_stars = st.slider("星の数", 1000, 20000, 10000, 500)      # 初期10000
 
-    # シードは「同じ配置を再現したい」用途として残してOK？（スライダーじゃないので要件違反ではないはず）
     seed = st.number_input("配置シード（同じ値で同じ星配置）", value=12345, step=1)
 
     st.markdown("## 表示")
@@ -165,7 +164,7 @@ markers = np.array(
 marker_text = ["+x(前)", "-x(後)", "+y(右)", "-y(左)", "+z(上)", "-z(下)"]
 
 # =========================
-# 3D描画（ここが本体）
+# 3D描画（本体）
 # =========================
 def build_3d_fig() -> go.Figure:
     if show_invisible_as_ring:
@@ -264,7 +263,15 @@ def build_3d_fig() -> go.Figure:
         )
     )
 
-    # 固定レンジ（ズームはユーザー操作に任せる）
+    # 初期向き：+x が画面中心に来るように固定（位置は維持したいので距離感は同程度に）
+    # eye は「原点からカメラの位置」。center=(0,0,0)を見る。
+    # +x を正面にしたい → カメラを -x 側に置いて原点を見る。
+    camera = dict(
+        eye=dict(x=-0.25, y=0.25, z=0.25),
+        center=dict(x=0.0, y=0.0, z=0.0),
+        up=dict(x=0.0, y=0.0, z=1.0),
+    )
+
     lim = 1.25
 
     fig.update_layout(
@@ -277,11 +284,7 @@ def build_3d_fig() -> go.Figure:
             zaxis=dict(visible=False, range=[-lim, lim]),
             bgcolor=BG,
             aspectmode="cube",
-            camera=dict(
-                eye=dict(x=0.25, y=0.25, z=0.25),
-                center=dict(x=0.0, y=0.0, z=0.0),
-                up=dict(x=0.0, y=0.0, z=1.0),
-            ),
+            camera=camera,
         ),
         showlegend=False,
         uirevision="3d-keep-camera",
