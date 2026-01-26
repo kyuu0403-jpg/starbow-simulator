@@ -7,8 +7,8 @@ import plotly.graph_objects as go
 # =========================
 st.set_page_config(page_title="STARBOW Simulator", layout="wide")
 
-BG = "#060a14"         # 背景（夜空っぽい暗色）
-PANEL_BG = "#060a14"   # Streamlitの周辺も暗く見せたい
+BG = "#060a14"
+PANEL_BG = "#060a14"
 TXT = "#ffffff"
 
 st.markdown(
@@ -21,11 +21,9 @@ st.markdown(
       h1, h2, h3, p, div, span, label {{
         color: {TXT} !important;
       }}
-      /* スライダーのラベル等 */
       [data-testid="stSidebar"], [data-testid="stSidebarContent"] {{
         background: {PANEL_BG};
       }}
-      /* ボタンの文字が見えない問題対策 */
       .stButton > button {{
         color: {TXT} !important;
         border: 1px solid rgba(255,255,255,0.25) !important;
@@ -43,17 +41,12 @@ st.markdown(
 # 物理・幾何ユーティリティ
 # =========================
 def random_unit_vectors(n: int, seed: int) -> np.ndarray:
-    """一様分布の単位ベクトルを n 個生成（球面一様）"""
     rng = np.random.default_rng(seed)
     v = rng.normal(size=(n, 3))
     v /= np.linalg.norm(v, axis=1, keepdims=True)
     return v
 
 def aberrate_directions(n: np.ndarray, beta: float) -> np.ndarray:
-    """
-    光行差：+x 方向へ速度 beta で進む観測者(宇宙船)から見た方向 n' を返す
-    n は「元の静止系での光の到来方向（単位ベクトル）」として扱う。
-    """
     if beta <= 0:
         return n.copy()
 
@@ -64,7 +57,6 @@ def aberrate_directions(n: np.ndarray, beta: float) -> np.ndarray:
     nz = n[:, 2]
 
     denom = (1.0 - beta * nx)
-    # 安全策：ゼロ割り回避
     denom = np.clip(denom, 1e-12, None)
 
     npx = (nx - beta) / denom
@@ -76,39 +68,27 @@ def aberrate_directions(n: np.ndarray, beta: float) -> np.ndarray:
     return npv
 
 def doppler_factor(n_prime: np.ndarray, beta: float) -> np.ndarray:
-    """
-    ドップラー因子 D = gamma(1 - beta * cosθ) の逆っぽい表現が色々あるけど、
-    ここでは「観測波長が短くなる（青方偏移）ほど色が前方で強く出る」ように
-    直感的に使えるスカラーを返す。
-    """
     if beta <= 0:
         return np.ones(len(n_prime))
 
     gamma = 1.0 / np.sqrt(1.0 - beta**2)
-    # cosθ'（宇宙船進行方向 +x に対する角）
     cos_th = n_prime[:, 0]
-    # 観測周波数比（よく使う形）：nu' / nu = gamma*(1 - beta*cosθ_static) と表現差があるが
-    # ここでは前方で >1 になる形が欲しいので、以下を採用：
-    # D = gamma * (1 + beta*cosθ')  （前方 cosθ'=1 で大きくなる）
     D = gamma * (1.0 + beta * cos_th)
     return D
 
 def rot_yaw_pitch(v: np.ndarray, yaw_deg: float, pitch_deg: float) -> np.ndarray:
-    """方向ベクトル v を yaw(左右) と pitch(上下) で回転"""
     yaw = np.deg2rad(yaw_deg)
     pitch = np.deg2rad(pitch_deg)
 
     cy, sy = np.cos(yaw), np.sin(yaw)
     cp, sp = np.cos(pitch), np.sin(pitch)
 
-    # yaw: z軸回り回転（左右）
     Rz = np.array([
         [cy, -sy, 0.0],
         [sy,  cy, 0.0],
         [0.0, 0.0, 1.0]
     ])
 
-    # pitch: y軸回り回転（上下）
     Ry = np.array([
         [ cp, 0.0, sp],
         [0.0, 1.0, 0.0],
@@ -119,67 +99,46 @@ def rot_yaw_pitch(v: np.ndarray, yaw_deg: float, pitch_deg: float) -> np.ndarray
     return v @ R.T
 
 def to_view_plane_coords(n_ship: np.ndarray, yaw_deg: float, pitch_deg: float):
-    """
-    2D表示用：視線方向が +x になるように座標を回してから、
-    前方半球(theta<=90°)を「角度座標(θ,φ)」として (u,v) を返す。
-    """
-    # 視線回転（ユーザーが見たい方向を +x に持ってくる）
-    # つまり、星方向ベクトルを逆向きに回す（見回し相当）
     n2 = rot_yaw_pitch(n_ship, -yaw_deg, -pitch_deg)
 
-    # theta: 視線(+x)からの角度
     cos_th = np.clip(n2[:, 0], -1.0, 1.0)
-    theta = np.arccos(cos_th)  # [0..pi]
+    theta = np.arccos(cos_th)
     theta_deg = np.rad2deg(theta)
 
-    # 前方半球
     mask = theta_deg <= 90.0
 
-    # phi: 視線軸周り（y,z）平面の角
-    phi = np.arctan2(n2[:, 2], n2[:, 1])  # [-pi, pi]
+    phi = np.arctan2(n2[:, 2], n2[:, 1])
     u = theta_deg * np.cos(phi)
     v = theta_deg * np.sin(phi)
     return u, v, mask
 
 def wavelength_to_rgb(wl_nm: np.ndarray) -> np.ndarray:
-    """
-    可視域(380-780nm)の簡易色。範囲外は黒。
-    （見えないものは基本描画しないので、ここは保険）
-    """
     wl = wl_nm
     rgb = np.zeros((len(wl), 3), dtype=float)
 
-    # ざっくり分割（簡易）
-    # 380-440: violet->blue
     m = (wl >= 380) & (wl < 440)
     rgb[m, 0] = -(wl[m] - 440) / (440 - 380)
     rgb[m, 2] = 1.0
 
-    # 440-490: blue->cyan
     m = (wl >= 440) & (wl < 490)
     rgb[m, 1] = (wl[m] - 440) / (490 - 440)
     rgb[m, 2] = 1.0
 
-    # 490-510: cyan->green
     m = (wl >= 490) & (wl < 510)
     rgb[m, 1] = 1.0
     rgb[m, 2] = -(wl[m] - 510) / (510 - 490)
 
-    # 510-580: green->yellow
     m = (wl >= 510) & (wl < 580)
     rgb[m, 0] = (wl[m] - 510) / (580 - 510)
     rgb[m, 1] = 1.0
 
-    # 580-645: yellow->red
     m = (wl >= 580) & (wl < 645)
     rgb[m, 0] = 1.0
     rgb[m, 1] = -(wl[m] - 645) / (645 - 580)
 
-    # 645-780: red
     m = (wl >= 645) & (wl <= 780)
     rgb[m, 0] = 1.0
 
-    # ガンマっぽく少し強調
     rgb = np.clip(rgb, 0, 1) ** 0.8
     return rgb
 
@@ -218,18 +177,14 @@ with colL:
 
     if st.button("初期化（向き・ズームを戻す）"):
         st.session_state.reset_clicked += 1
-        # 2D用向き
         st.session_state.yaw2d = 0.0
         st.session_state.pitch2d = 0.0
-        # 3Dカメラ
         st.session_state.cam3d = None
-        # ズーム（スライダーの値自体は戻さない。戻したいならここでst.session_stateにキーを持たせる）
         st.rerun()
 
 with colR:
     if not drag_3d:
         st.markdown(f"## v/c = {beta:.2f} （スライダーで向き）")
-        # 2D向き（セッションで保持）
         if "yaw2d" not in st.session_state:
             st.session_state.yaw2d = 0.0
         if "pitch2d" not in st.session_state:
@@ -244,64 +199,54 @@ with colR:
         st.caption("※3Dモードではドラッグで見回し・ホイール/ピンチでズームできます。パラメータを変えても視点を維持します。")
 
 # =========================
-# データ生成（星配置・相対論）
+# データ生成
 # =========================
 base_dirs = random_unit_vectors(int(n_stars), int(seed))
 
-# ベース波長：黄色寄りを基準にして、ドップラーで虹化するのが“STARBOWらしい”
-base_lambda_nm = 560.0  # 黄色
-# 光行差
+base_lambda_nm = 560.0
 dirs_ship = aberrate_directions(base_dirs, beta)
-# ドップラー因子
 D = doppler_factor(dirs_ship, beta)
 obs_lambda = base_lambda_nm / D
 
-# 可視判定（可視域のみ基本表示）
 visible = (obs_lambda >= 380.0) & (obs_lambda <= 780.0)
 
-# 可視の色
 colors_rgb = wavelength_to_rgb(obs_lambda)
 colors = rgb_to_hex(colors_rgb)
 
 # =========================
-# 目印（方向マーカー）
+# 目印
 # =========================
-# 宇宙船進行方向系： +x 前, -x 後, +y 右, -y 左, +z 上, -z 下
 markers = np.array([
-    [ 1.0, 0.0, 0.0],  # +x
-    [-1.0, 0.0, 0.0],  # -x
-    [ 0.0, 1.0, 0.0],  # +y
-    [ 0.0,-1.0, 0.0],  # -y
-    [ 0.0, 0.0, 1.0],  # +z
-    [ 0.0, 0.0,-1.0],  # -z
+    [ 1.0, 0.0, 0.0],
+    [-1.0, 0.0, 0.0],
+    [ 0.0, 1.0, 0.0],
+    [ 0.0,-1.0, 0.0],
+    [ 0.0, 0.0, 1.0],
+    [ 0.0, 0.0,-1.0],
 ], dtype=float)
 
 marker_text = ["+x(前)", "-x(後)", "+y(右)", "-y(左)", "+z(上)", "-z(下)"]
 
 # =========================
-# 2Dモード描画
+# 2D描画
 # =========================
 def build_2d_fig() -> go.Figure:
     u, v, hemi = to_view_plane_coords(dirs_ship, st.session_state.yaw2d, st.session_state.pitch2d)
 
-    # 2Dは前方半球のみ
     mask2d = hemi
 
-    # 不可視光：OFFなら描画しない（完全に消す）
     if show_invisible_as_ring:
-        # 可視は塗り、不可視は白枠
         vis_mask = mask2d & visible
         inv_mask = mask2d & (~visible)
     else:
         vis_mask = mask2d & visible
         inv_mask = np.zeros_like(vis_mask, dtype=bool)
 
-    # ズーム：θ座標(度)なので、表示範囲を縮める
-    lim = 90.0 / zoom
+    # ★ここが今回の修正：90°リングが絶対に見切れないようにする
+    lim = max(90.0, 90.0 / zoom)
 
     fig = go.Figure()
 
-    # 可視点
     if np.any(vis_mask):
         fig.add_trace(
             go.Scattergl(
@@ -318,7 +263,6 @@ def build_2d_fig() -> go.Figure:
             )
         )
 
-    # グロー（可視のみ・疑似）
     if glow > 0 and np.any(vis_mask):
         fig.add_trace(
             go.Scattergl(
@@ -335,7 +279,6 @@ def build_2d_fig() -> go.Figure:
             )
         )
 
-    # 不可視（白枠）
     if np.any(inv_mask):
         fig.add_trace(
             go.Scattergl(
@@ -353,7 +296,7 @@ def build_2d_fig() -> go.Figure:
             )
         )
 
-    # 目印：2Dでは視線座標に回してから、前方半球だけ出す（分かりやすさ優先）
+    # 目印（前方半球のみ）
     m_rot = rot_yaw_pitch(markers, -st.session_state.yaw2d, -st.session_state.pitch2d)
     cos_th_m = np.clip(m_rot[:, 0], -1, 1)
     th_m = np.rad2deg(np.arccos(cos_th_m))
@@ -425,18 +368,15 @@ def build_2d_fig() -> go.Figure:
             range=[-lim, lim],
         ),
         showlegend=False,
-        # 2Dはズームスライダーを優先したいので uirevision は zoom 依存にする
         uirevision=f"2d-{zoom:.2f}-{st.session_state.reset_clicked}",
     )
 
     return fig
 
 # =========================
-# 3Dモード描画
+# 3D描画（ここは絶対そのまま）
 # =========================
 def build_3d_fig() -> go.Figure:
-    # 3D表示：単位球面上の点として出す（宇宙船中心視点）
-    # 可視/不可視の描画制御
     if show_invisible_as_ring:
         vis_mask = visible
         inv_mask = ~visible
@@ -444,12 +384,10 @@ def build_3d_fig() -> go.Figure:
         vis_mask = visible
         inv_mask = np.zeros_like(visible, dtype=bool)
 
-    # 目印を少し外側へ
     m3 = markers * 1.15
 
     fig = go.Figure()
 
-    # グロー（3D）: plotly 3Dでブラーはできないので「大きい半透明点」で疑似
     if glow > 0 and np.any(vis_mask):
         fig.add_trace(
             go.Scatter3d(
@@ -467,7 +405,6 @@ def build_3d_fig() -> go.Figure:
             )
         )
 
-    # 可視点
     if np.any(vis_mask):
         fig.add_trace(
             go.Scatter3d(
@@ -485,7 +422,6 @@ def build_3d_fig() -> go.Figure:
             )
         )
 
-    # 不可視点（白枠）※OFFならそもそも作らない
     if np.any(inv_mask):
         fig.add_trace(
             go.Scatter3d(
@@ -497,14 +433,13 @@ def build_3d_fig() -> go.Figure:
                     size=float(star_size * 2.5),
                     color="rgba(0,0,0,0)",
                     opacity=0.9,
-                    line=dict(color="rgba(255,255,255,0.95)", width=2),  # ←必ずスカラー
+                    line=dict(color="rgba(255,255,255,0.95)", width=2),
                 ),
                 hoverinfo="skip",
                 name="invisible",
             )
         )
 
-    # 目印
     fig.add_trace(
         go.Scatter3d(
             x=m3[:, 0],
@@ -520,7 +455,6 @@ def build_3d_fig() -> go.Figure:
         )
     )
 
-    # 「宇宙船位置」(原点) も目印として追加
     fig.add_trace(
         go.Scatter3d(
             x=[0], y=[0], z=[0],
@@ -534,9 +468,6 @@ def build_3d_fig() -> go.Figure:
         )
     )
 
-    # レイアウト：カメラ維持が肝（uirevisionを固定）
-    # 3Dのズームは plotly 側操作も許可しつつ、スライダーzoomで「見た目のスケール」を合わせる
-    # → ここでは球の半径表示範囲を zoom に応じて狭める
     lim = 1.25 / zoom
 
     fig.update_layout(
@@ -549,7 +480,6 @@ def build_3d_fig() -> go.Figure:
             zaxis=dict(visible=False, range=[-lim, lim]),
             bgcolor=BG,
             aspectmode="cube",
-            # ここが重要：視点を「外から俯瞰」じゃなく、なるべく中心に近い感じにする
             camera=dict(
                 eye=dict(x=0.25, y=0.25, z=0.25),
                 center=dict(x=0.0, y=0.0, z=0.0),
@@ -557,7 +487,6 @@ def build_3d_fig() -> go.Figure:
             ),
         ),
         showlegend=False,
-        # これでパラメータ変更してもPlotly側のカメラ状態が維持される
         uirevision="3d-keep-camera",
     )
 
@@ -568,24 +497,17 @@ def build_3d_fig() -> go.Figure:
 # =========================
 if drag_3d:
     fig = build_3d_fig()
-    # on_select は使わない（Streamlit版によってAPI例外になるため）
     st.plotly_chart(
         fig,
         use_container_width=True,
-        config=dict(
-            scrollZoom=True,  # ピンチ/ホイールズーム
-            displaylogo=False,
-        ),
+        config=dict(scrollZoom=True, displaylogo=False),
     )
 else:
     fig = build_2d_fig()
     st.plotly_chart(
         fig,
         use_container_width=True,
-        config=dict(
-            scrollZoom=False,  # 2Dはズームスライダーで統制
-            displaylogo=False,
-        ),
+        config=dict(scrollZoom=False, displaylogo=False),
     )
 
 st.caption("※不可視光は「不可視光を表示（白枠）」OFF のとき完全に描画しません。ONで白枠として表示します。")
