@@ -231,7 +231,9 @@ marker_text = ["+x(前)", "-x(後)", "+y(右)", "-y(左)", "+z(上)", "-z(下)"]
 # 2D描画
 # =========================
 def build_2d_fig() -> go.Figure:
-    u, v, hemi = to_view_plane_coords(dirs_ship, st.session_state.yaw2d, st.session_state.pitch2d)
+    u, v, hemi = to_view_plane_coords(
+        dirs_ship, st.session_state.yaw2d, st.session_state.pitch2d
+    )
 
     mask2d = hemi
 
@@ -240,13 +242,15 @@ def build_2d_fig() -> go.Figure:
         inv_mask = mask2d & (~visible)
     else:
         vis_mask = mask2d & visible
-        inv_mask = np.zeros_like(vis_mask, dtype=bool)
+        inv_mask = np.zeros_like(mask2d, dtype=bool)  # ←完全に描画しない
 
-    # ★ここが今回の修正：90°リングが絶対に見切れないようにする
-    lim = 90.0 / zoom
+    # 2Dズーム：スライダーだけで決まる「固定レンジ」
+    # zoomが大きいほど拡大 → 表示範囲は小さく
+    lim = 90.0 / float(zoom)
 
     fig = go.Figure()
 
+    # 可視
     if np.any(vis_mask):
         fig.add_trace(
             go.Scattergl(
@@ -254,15 +258,16 @@ def build_2d_fig() -> go.Figure:
                 y=v[vis_mask],
                 mode="markers",
                 marker=dict(
-                    size=star_size * 3.0,
+                    size=float(star_size * 3.0),
                     color=np.array(colors)[vis_mask],
                     opacity=0.9,
                 ),
                 hoverinfo="skip",
-                name="visible",
+                showlegend=False,
             )
         )
 
+    # グロー
     if glow > 0 and np.any(vis_mask):
         fig.add_trace(
             go.Scattergl(
@@ -270,15 +275,16 @@ def build_2d_fig() -> go.Figure:
                 y=v[vis_mask],
                 mode="markers",
                 marker=dict(
-                    size=star_size * 9.0 * (1.0 + glow * 2.5),
+                    size=float(star_size * 9.0 * (1.0 + glow * 2.5)),
                     color=np.array(colors)[vis_mask],
-                    opacity=min(0.25, 0.08 + glow * 0.25),
+                    opacity=float(min(0.25, 0.08 + glow * 0.25)),
                 ),
                 hoverinfo="skip",
-                name="glow",
+                showlegend=False,
             )
         )
 
+    # 不可視（白枠ONのときだけ）
     if np.any(inv_mask):
         fig.add_trace(
             go.Scattergl(
@@ -286,13 +292,13 @@ def build_2d_fig() -> go.Figure:
                 y=v[inv_mask],
                 mode="markers",
                 marker=dict(
-                    size=star_size * 3.2,
+                    size=float(star_size * 3.2),
                     color="rgba(0,0,0,0)",
                     line=dict(color="rgba(255,255,255,0.9)", width=1.2),
                     opacity=0.9,
                 ),
                 hoverinfo="skip",
-                name="invisible",
+                showlegend=False,
             )
         )
 
@@ -315,63 +321,72 @@ def build_2d_fig() -> go.Figure:
             textposition="top center",
             textfont=dict(color="white", size=12),
             hoverinfo="skip",
-            name="markers",
+            showlegend=False,
         )
     )
 
     # リング（30/60/90）
     for rr, w in [(30, 1.2), (60, 1.4), (90, 2.2)]:
-        t = np.linspace(0, 2*np.pi, 400)
+        t = np.linspace(0, 2 * np.pi, 400)
         fig.add_trace(
             go.Scatter(
-                x=rr*np.cos(t),
-                y=rr*np.sin(t),
+                x=rr * np.cos(t),
+                y=rr * np.sin(t),
                 mode="lines",
                 line=dict(color="rgba(255,255,255,0.20)", width=w),
                 hoverinfo="skip",
-                showlegend=False
+                showlegend=False,
             )
         )
 
     # 十字
     fig.add_trace(
         go.Scatter(
-            x=[-90, 90], y=[0, 0],
+            x=[-90, 90],
+            y=[0, 0],
             mode="lines",
             line=dict(color="rgba(140,180,255,0.35)", width=2),
             hoverinfo="skip",
-            showlegend=False
+            showlegend=False,
         )
     )
     fig.add_trace(
         go.Scatter(
-            x=[0, 0], y=[-90, 90],
+            x=[0, 0],
+            y=[-90, 90],
             mode="lines",
             line=dict(color="rgba(140,180,255,0.35)", width=2),
             hoverinfo="skip",
-            showlegend=False
+            showlegend=False,
         )
     )
 
+    # ★ここが肝：オートスケールを絶対させない（ズームはrangeだけ）
     fig.update_layout(
         paper_bgcolor=BG,
         plot_bgcolor=BG,
         margin=dict(l=10, r=10, t=10, b=10),
+        showlegend=False,
         xaxis=dict(
             visible=False,
             range=[-lim, lim],
+            autorange=False,
+            fixedrange=True,
             scaleanchor="y",
             scaleratio=1,
         ),
         yaxis=dict(
             visible=False,
             range=[-lim, lim],
+            autorange=False,
+            fixedrange=True,
         ),
-        showlegend=False,
-        uirevision=f"2d-{zoom:.2f}-{st.session_state.reset_clicked}",
+        # ズーム変更時は必ずレンジを更新したいので zoom を含める
+        uirevision=f"2d-{float(zoom):.2f}-{st.session_state.reset_clicked}",
     )
 
     return fig
+
 
 # =========================
 # 3D描画（ここは絶対そのまま）
@@ -511,4 +526,5 @@ else:
     )
 
 st.caption("※不可視光は「不可視光を表示（白枠）」OFF のとき完全に描画しません。ONで白枠として表示します。")
+
 
