@@ -302,4 +302,5 @@ st.plotly_chart(
     config=dict(scrollZoom=True, displaylogo=False),
 )
 
-st.caption("※不可視光は「不可視光を表示（白枠）」OFF のとき完全に描画しません。ONで白枠として表示します。")
+st.caption("※不可視光は「不可視光を表示（白枠）」OFF のとき完全に表示しません。ONで白枠として表示します。")
+
