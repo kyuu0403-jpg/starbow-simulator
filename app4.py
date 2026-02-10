@@ -24,14 +24,6 @@ st.markdown(
       [data-testid="stSidebar"], [data-testid="stSidebarContent"] {{
         background: {PANEL_BG};
       }}
-      .stButton > button {{
-        color: {TXT} !important;
-        border: 1px solid rgba(255,255,255,0.25) !important;
-        background: rgba(255,255,255,0.06) !important;
-      }}
-      .stButton > button:hover {{
-        background: rgba(255,255,255,0.12) !important;
-      }}
     </style>
     """,
     unsafe_allow_html=True
@@ -49,257 +41,146 @@ def random_unit_vectors(n: int, seed: int) -> np.ndarray:
 def aberrate_directions(n: np.ndarray, beta: float) -> np.ndarray:
     if beta <= 0:
         return n.copy()
-
     gamma = 1.0 / np.sqrt(1.0 - beta**2)
-
-    nx = n[:, 0]
-    ny = n[:, 1]
-    nz = n[:, 2]
-
-    denom = (1.0 - beta * nx)
-    denom = np.clip(denom, 1e-12, None)
-
+    nx, ny, nz = n[:, 0], n[:, 1], n[:, 2]
+    denom = np.clip(1.0 - beta * nx, 1e-12, None)
     npx = (nx - beta) / denom
     npy = ny / (gamma * denom)
     npz = nz / (gamma * denom)
-
     npv = np.stack([npx, npy, npz], axis=1)
-    npv /= np.linalg.norm(npv, axis=1, keepdims=True)
-    return npv
+    return npv / np.linalg.norm(npv, axis=1, keepdims=True)
 
 def doppler_factor(n_prime: np.ndarray, beta: float) -> np.ndarray:
     if beta <= 0:
         return np.ones(len(n_prime))
     gamma = 1.0 / np.sqrt(1.0 - beta**2)
-    cos_th = n_prime[:, 0]
-    return gamma * (1.0 + beta * cos_th)
+    return gamma * (1.0 + beta * n_prime[:, 0])
 
 def wavelength_to_rgb(wl_nm: np.ndarray) -> np.ndarray:
     wl = wl_nm
-    rgb = np.zeros((len(wl), 3), dtype=float)
+    rgb = np.zeros((len(wl), 3))
+    m = (wl >= 380) & (wl <= 780)
+    x = wl[m]
 
-    m = (wl >= 380) & (wl < 440)
-    rgb[m, 0] = -(wl[m] - 440) / (440 - 380)
-    rgb[m, 2] = 1.0
+    r = np.zeros_like(x)
+    g = np.zeros_like(x)
+    b = np.zeros_like(x)
 
-    m = (wl >= 440) & (wl < 490)
-    rgb[m, 1] = (wl[m] - 440) / (490 - 440)
-    rgb[m, 2] = 1.0
+    r[(x >= 510) & (x < 580)] = (x[(x >= 510) & (x < 580)] - 510) / 70
+    g[(x >= 440) & (x < 490)] = (x[(x >= 440) & (x < 490)] - 440) / 50
+    b[(x >= 380) & (x < 440)] = 1
 
-    m = (wl >= 490) & (wl < 510)
-    rgb[m, 1] = 1.0
-    rgb[m, 2] = -(wl[m] - 510) / (510 - 490)
-
-    m = (wl >= 510) & (wl < 580)
-    rgb[m, 0] = (wl[m] - 510) / (580 - 510)
-    rgb[m, 1] = 1.0
-
-    m = (wl >= 580) & (wl < 645)
-    rgb[m, 0] = 1.0
-    rgb[m, 1] = -(wl[m] - 645) / (645 - 580)
-
-    m = (wl >= 645) & (wl <= 780)
-    rgb[m, 0] = 1.0
-
-    rgb = np.clip(rgb, 0, 1) ** 0.8
+    rgb[m] = np.clip(np.stack([r, g, b], axis=1), 0, 1) ** 0.8
     return rgb
 
-def rgb_to_hex(rgb: np.ndarray) -> list[str]:
-    rgb255 = (np.clip(rgb, 0, 1) * 255).astype(int)
-    return [f"rgb({r},{g},{b})" for r, g, b in rgb255]
+def rgb_to_hex(rgb):
+    return [f"rgb({int(r*255)},{int(g*255)},{int(b*255)})" for r,g,b in rgb]
 
 # =========================
-# UI
+# UI（1回だけ）
 # =========================
 st.markdown("# **STARBOW simulator(3D)**")
 
-colL, colR = st.columns([1.05, 2.2], gap="large")
+colL, colR = st.columns([1.1, 2.3], gap="large")
 
 with colL:
-    st.markdown("## パラメータ")
-    beta = st.slider("v/c", 0.0, 0.99, 0.00, 0.01)             # 初期0
-    n_stars = st.slider("星の数", 1000, 20000, 10000, 500)      # 初期10000
+    st.subheader("パラメータ")
+    beta = st.slider("v/c", 0.0, 0.99, 0.0, 0.01)
+    n_stars = st.slider("星の数", 1000, 20000, 10000, 500)
+    seed = st.number_input("配置シード", value=12345, step=1)
 
-    seed = st.number_input("配置シード（同じ値で同じ星配置）", value=12345, step=1)
-
-    st.markdown("## 表示")
+    st.subheader("表示")
     star_size = st.slider("星の大きさ", 0.5, 6.0, 1.0, 0.1)
     glow = st.slider("グロー強さ", 0.0, 1.0, 0.0, 0.02)
-
-    show_invisible_as_ring = st.toggle("不可視光を表示（白枠）", value=False)
+    show_invisible_as_ring = st.toggle("不可視光を表示（白枠）", False)
 
 with colR:
-    st.markdown(f"## v/c = {beta:.2f} （ドラッグで見回し）")
-    st.caption("※ドラッグで見回し・ホイール/ピンチでズームできます。")
+    st.markdown(f"## v/c = {beta:.2f}（ドラッグで見回し）")
 
 # =========================
 # データ生成
 # =========================
-base_dirs = random_unit_vectors(int(n_stars), int(seed))
-
-base_lambda_nm = 560.0
-dirs_ship = aberrate_directions(base_dirs, beta)
-D = doppler_factor(dirs_ship, beta)
-obs_lambda = base_lambda_nm / D
-
-visible = (obs_lambda >= 380.0) & (obs_lambda <= 780.0)
-
-colors_rgb = wavelength_to_rgb(obs_lambda)
-colors = rgb_to_hex(colors_rgb)
+dirs0 = random_unit_vectors(n_stars, seed)
+dirs = aberrate_directions(dirs0, beta)
+D = doppler_factor(dirs, beta)
+lam = 560 / D
+visible = (lam >= 380) & (lam <= 780)
+colors = rgb_to_hex(wavelength_to_rgb(lam))
 
 # =========================
-# 目印（前後左右上下 + 船）
+# マーカー
 # =========================
-markers = np.array(
-    [
-        [ 1.0, 0.0, 0.0],
-        [-1.0, 0.0, 0.0],
-        [ 0.0, 1.0, 0.0],
-        [ 0.0,-1.0, 0.0],
-        [ 0.0, 0.0, 1.0],
-        [ 0.0, 0.0,-1.0],
-    ],
-    dtype=float
-)
+markers = np.array([
+    [1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]
+])
 marker_text = ["+x(前)", "-x(後)", "+y(右)", "-y(左)", "+z(上)", "-z(下)"]
 
 # =========================
-# 3D描画（本体）
+# 3D描画
 # =========================
-def build_3d_fig() -> go.Figure:
-    if show_invisible_as_ring:
-        vis_mask = visible
-        inv_mask = ~visible
-    else:
-        vis_mask = visible
-        inv_mask = np.zeros_like(visible, dtype=bool)
-
-    m3 = markers * 1.15
-
+def build_3d_fig():
     fig = go.Figure()
 
-    # glow
-    if glow > 0 and np.any(vis_mask):
-        fig.add_trace(
-            go.Scatter3d(
-                x=dirs_ship[vis_mask, 0],
-                y=dirs_ship[vis_mask, 1],
-                z=dirs_ship[vis_mask, 2],
-                mode="markers",
-                marker=dict(
-                    size=float(star_size * 6.0 * (1.0 + glow * 2.0)),
-                    color=np.array(colors)[vis_mask],
-                    opacity=float(min(0.20, 0.06 + glow * 0.20)),
-                ),
-                hoverinfo="skip",
-                name="glow",
-            )
-        )
+    if glow > 0:
+        fig.add_trace(go.Scatter3d(
+            x=dirs[visible,0], y=dirs[visible,1], z=dirs[visible,2],
+            mode="markers",
+            marker=dict(size=star_size*6, color=np.array(colors)[visible], opacity=0.15),
+            hoverinfo="skip"
+        ))
 
-    # visible
-    if np.any(vis_mask):
-        fig.add_trace(
-            go.Scatter3d(
-                x=dirs_ship[vis_mask, 0],
-                y=dirs_ship[vis_mask, 1],
-                z=dirs_ship[vis_mask, 2],
-                mode="markers",
-                marker=dict(
-                    size=float(star_size * 2.3),
-                    color=np.array(colors)[vis_mask],
-                    opacity=0.95,
-                ),
-                hoverinfo="skip",
-                name="visible",
-            )
-        )
+    fig.add_trace(go.Scatter3d(
+        x=dirs[visible,0], y=dirs[visible,1], z=dirs[visible,2],
+        mode="markers",
+        marker=dict(size=star_size*2.3, color=np.array(colors)[visible]),
+        hoverinfo="skip"
+    ))
 
-    # invisible (white outline)
-    if np.any(inv_mask):
-        fig.add_trace(
-            go.Scatter3d(
-                x=dirs_ship[inv_mask, 0],
-                y=dirs_ship[inv_mask, 1],
-                z=dirs_ship[inv_mask, 2],
-                mode="markers",
-                marker=dict(
-                    size=float(star_size * 2.5),
-                    color="rgba(0,0,0,0)",
-                    opacity=0.9,
-                    line=dict(color="rgba(255,255,255,0.95)", width=2),
-                ),
-                hoverinfo="skip",
-                name="invisible",
-            )
-        )
+    if show_invisible_as_ring:
+        fig.add_trace(go.Scatter3d(
+            x=dirs[~visible,0], y=dirs[~visible,1], z=dirs[~visible,2],
+            mode="markers",
+            marker=dict(size=star_size*2.5, color="rgba(0,0,0,0)",
+                        line=dict(color="white", width=2)),
+            hoverinfo="skip"
+        ))
 
-    # axis markers
-    fig.add_trace(
-        go.Scatter3d(
-            x=m3[:, 0],
-            y=m3[:, 1],
-            z=m3[:, 2],
-            mode="markers+text",
-            marker=dict(size=7, color="white", opacity=0.95),
-            text=marker_text,
-            textposition="top center",
-            textfont=dict(color="white", size=12),
-            hoverinfo="skip",
-            name="markers",
-        )
-    )
+    fig.add_trace(go.Scatter3d(
+        x=markers[:,0]*1.15, y=markers[:,1]*1.15, z=markers[:,2]*1.15,
+        mode="markers+text",
+        marker=dict(size=7, color="white"),
+        text=marker_text,
+        textposition="top center"
+    ))
 
-    # ship at origin
-    fig.add_trace(
-        go.Scatter3d(
-            x=[0], y=[0], z=[0],
-            mode="markers+text",
-            marker=dict(size=6, color="white"),
-            text=["ship"],
-            textposition="bottom center",
-            textfont=dict(color="white", size=12),
-            hoverinfo="skip",
-            name="ship",
-        )
-    )
-
-    # 初期向き：+x が画面中心に来るように固定（位置は維持したいので距離感は同程度に）
-    # eye は「原点からカメラの位置」。center=(0,0,0)を見る。
-    # +x を正面にしたい → カメラを -x 側に置いて原点を見る。
-    camera = dict(
-        eye=dict(x=-0.25, y=0.25, z=0.25),
-        center=dict(x=0.0, y=0.0, z=0.0),
-        up=dict(x=0.0, y=0.0, z=1.0),
-    )
-
-    lim = 1.25
+    fig.add_trace(go.Scatter3d(
+        x=[0], y=[0], z=[0],
+        mode="markers+text",
+        marker=dict(size=6, color="white"),
+        text=["ship"],
+        textposition="bottom center"
+    ))
 
     fig.update_layout(
-        paper_bgcolor=BG,
-        plot_bgcolor=BG,
-        margin=dict(l=10, r=10, t=10, b=10),
         scene=dict(
-            xaxis=dict(visible=False, range=[-lim, lim]),
-            yaxis=dict(visible=False, range=[-lim, lim]),
-            zaxis=dict(visible=False, range=[-lim, lim]),
-            bgcolor=BG,
             aspectmode="cube",
-            camera=camera,
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+            zaxis=dict(visible=False),
+            camera=dict(
+                eye=dict(x=-0.25, y=0.25, z=0.25),
+                center=dict(x=0,y=0,z=0),
+                up=dict(x=0,y=0,z=1)
+            ),
+            bgcolor=BG
         ),
+        margin=dict(l=0,r=0,t=0,b=0),
+        paper_bgcolor=BG,
         showlegend=False,
-        uirevision="3d-keep-camera",
+        uirevision="keep"
     )
-
     return fig
 
-# =========================
-# 描画
-# =========================
-fig = build_3d_fig()
-st.plotly_chart(
-    fig,
-    use_container_width=True,
-    config=dict(scrollZoom=True, displaylogo=False),
-)
-
-st.caption("※不可視光は「不可視光を表示（白枠）」OFF のとき完全に表示しません。ONで白枠として表示します。")
+with colR:
+    st.plotly_chart(build_3d_fig(), use_container_width=True,
+                    config=dict(scrollZoom=True, displaylogo=False))
