@@ -293,14 +293,15 @@ def build_3d_fig() -> go.Figure:
     return fig
 
 # =========================
-# 描画
+# 描画（レイアウト調整）
 # =========================
-fig = build_3d_fig()
-st.plotly_chart(
-    fig,
-    use_container_width=True,
-    config=dict(scrollZoom=True, displaylogo=False),
-)
+colL, colR = st.columns([1.05, 2.2], gap="large")
 
-st.caption("※不可視光は「不可視光を表示（白枠）」OFF のとき完全に表示しません。ONで白枠として表示します。")
+with colR:
+    fig = build_3d_fig()
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        config=dict(scrollZoom=True, displaylogo=False),
+    )
 
